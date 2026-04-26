@@ -41,8 +41,16 @@
 - `/home/steam/Steam/steamapps/workshop/content/550/` 下的下载缓存。
 
 ## 🔧 6. 故障排查与 SSH 技巧
-- **KeyValues Error**：修复 BOM 头或括号不匹配。
+- **KeyValues Error**：修复 BOM 头 or 括号不匹配。
 - **SSH 别名**：在本地 `~/.ssh/config` 配置别名，实现一键连接。
+
+## 💾 7. 本地备份与恢复
+- **备份目录**：在本地 `addons/workshop_backup` 存放稳定的 VPK 文件。
+- **应急恢复**：当遇到地图反复下载或丢失时，手动将备份文件移动到 `addons` 根目录。
+
+## ❓ 8. 常见问题 (FAQ)
+- **客户端下载问题**：解释了为什么服务器安装后客户端仍需下载（Source 引擎架构）。
+- **版本校验不一致**：提供了解决地图反复下载的彻底方案。
 
 ---
 

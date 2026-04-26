@@ -142,12 +142,6 @@ ls /opt/l4d2/left4dead2/maps/*.bsp | xargs -n1 basename | sed 's/\.bsp//'
     rcon changelevel q_ancienttown # 切换到 HOME TOWN 第一关
     ```
 
-### C. 进阶：如何找到第一关的名称？
-如果你不确定新安装地图的第一关叫什么，可以查看 `missions` 目录下的配置文件：
-```bash
-cat /opt/l4d2/left4dead2/missions/*.txt | grep "Map" | head -n 1
-```
-
 ---
 
 ## 7. 常见问题排查 (Troubleshooting)
@@ -200,3 +194,68 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
   ```
 
 ### B. 远程执行命令常用模式
+- **查看实时日志**：
+  ```bash
+  ssh myubuntu "sudo journalctl -u l4d2.service -f"
+  ```
+- **重启游戏服务**：
+  ```bash
+  ssh myubuntu "sudo systemctl restart l4d2"
+  ```
+
+---
+
+## 10. 常见问题 (FAQ)
+
+### Q: 为什么服务器装了地图，我的本地电脑（客户端）还需要下载？
+这是由 Source 引擎（L4D2 所使用的引擎）的架构决定的，并非 Bug：
+
+1.  **资源分离**：服务器只负责计算游戏逻辑（僵尸在哪里、子弹打中没），而客户端负责渲染画面（模型、贴图、场景几何体）。这些巨大的资源文件（VPK/BSP）必须存在于你的本地硬盘上，电脑才能画出地图。
+2.  **一致性检查**：为了防止作弊或模型错误，客户端和服务器的地图文件必须**完全一致**。
+3.  **如何简化？**
+    -   **手动安装**：将服务器上下载的 `.vpk` 文件也放到你本地电脑的 `left4dead2/addons` 文件夹下。
+    -   **创意工坊**：最推荐的方法。如果你订阅了该地图，Steam 会自动帮你管理下载和更新。
+
+### Q: 为什么我已经下载了地图，进入游戏时还会“重复下载”？
+这种情况通常是由于 **“版本校验不一致”** 或 **“Steam 自动同步冲突”** 导致的：
+
+1.  **版本微差**：如果服务器上的地图文件（手动解压的 BSP）与你本地创意工坊订阅的 VPK 版本有极细微的差别（哪怕只是日期戳不同），游戏引擎就会认为你没有这张图，强制通过服务器内置的慢速通道重新下载到你的 `left4dead2/downloads` 文件夹。
+2.  **创意工坊同步问题**：Steam 有时会因为网络波动认为本地文件损坏，从而反复触发验证和下载。
+3.  **解决方法**：
+    -   **最彻底方案**：取消创意工坊订阅，手动将服务器使用的那个 `.vpk` 文件下载到你本地电脑的 `common/Left 4 Dead 2/left4dead2/addons` 目录下。
+    -   **清理缓存**：删除本地电脑 `left4dead2/downloads` 文件夹下的所有内容，防止旧的残余文件干扰校验。
+    -   **检查冲突**：确保 `addons` 文件夹里没有两个不同版本的同一张地图。
+
+---
+
+## 9. 本地地图备份与应急恢复
+
+为了防止 Steam 创意工坊同步失败或文件意外丢失，我们在本地建立了备份目录。
+
+### A. 备份目录位置
+- **路径**：`D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_backup`
+- **用途**：存放从服务器下载的原始 `.vpk` 文件或已确认稳定的地图备份。
+
+### B. 应急恢复流程
+如果发现某张地图在进入游戏时反复下载，或提示“Map Missing”：
+1.  进入上述 `workshop_backup` 目录。
+2.  将对应的 `.vpk` 文件复制。
+3.  粘贴到上一级目录 `addons` 中（直接放在 `addons` 根目录，不要放进 `workshop` 子目录）。
+4.  重启游戏，游戏会优先加载 `addons` 目录下的手动安装文件。
+
+### C. 如何手动建立备份 (本地终端)
+如果您想将当前地图备份，可以在本地终端执行以下命令：
+
+```powershell
+# 1. 备份当前默认地图 MTL Gone To Hell
+curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_backup\mtlgth.vpk" "https://cdn.steamusercontent.com/ugc/29934071615638932/7C5A842BFEF692694EB6EF1E0F6021585B9C6EEB/"
+
+# 2. 备份 Yama 完整版 (假设 ID 为 2498978864)
+copy "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop\2498978864.vpk" "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_backup\yama_full.vpk"
+
+# 3. 备份 HOME TOWN 1.0 Modified
+curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_backup\hometown.vpk" "https://cdn.steamusercontent.com/ugc/2494507236830147734/758B7F4410E5E3685C946A498F338AE47A66F11C/"
+```
+
+---
+*Generated on: 2026-04-25*
