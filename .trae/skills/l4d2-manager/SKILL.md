@@ -1,3 +1,8 @@
+---
+name: "l4d2-manager"
+description: "管理 L4D2 服务器配置、地图安装及实时切换。当需要安装地图、修改启动参数或通过 RCON 切换地图时调用。"
+---
+
 # L4D2 服务器基础配置与地图管理指南
 
 本指南记录了从零开始配置 L4D2 专用服务器的全过程，包括环境优化、代理设置、基础安装以及后续的地图管理。
@@ -236,7 +241,7 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
 
 ## 9. 本地地图备份与应急恢复
 
-为了防止 Steam 创意工坊同步失败或文件意外丢失，我们在本地建立了备份目录。
+为了防止 Steam 创意工坊同步失败 or 文件意外丢失，我们在本地建立了备份目录。
 
 ### A. 备份目录位置
 - **路径**：`D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_backup`
@@ -309,7 +314,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
   ```bash
   sudo ufw allow 27016/udp
   ```
-- **脚本隔离**：每个房间拥有独立的启动脚本（指定不同的端口和默认地图）。
+- **脚本隔离**：每个房间拥有独立的启动脚本（指定不同的端口 and 默认地图）。
 - **服务隔离**：每个房间配置独立的 Systemd 服务。
 
 ### B. 第二个房间配置详情 (Room 2)
@@ -345,7 +350,7 @@ sv_region 4                    // 设置为亚洲区 (4)，国内玩家搜得更
 
 **2. 私密/组内模式（仅限朋友）：**
 ```hlsl
-sv_steamgroup_exclusive 1      // 仅限 Steam 组成员
+sv_steamgroup_exclusive 1      // 仅限 Steam 成员
 sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 ```
 
@@ -353,7 +358,7 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-### C. 常用管理指令汇总
+## 13. 常用管理指令汇总
 
 - **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
 - **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
