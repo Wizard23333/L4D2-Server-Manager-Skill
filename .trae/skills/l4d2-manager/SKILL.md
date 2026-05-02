@@ -9,6 +9,29 @@ description: "管理 L4D2 服务器配置、地图安装及实时切换。当需
 
 ---
 
+## 当前服务器快照
+
+> 更新时间：2026-05-02。记录运行形态和排障入口，不记录真实 RCON 密码、GSLT、Steam token 等敏感信息。
+
+| 房间 | 服务 | 端口 | 配置文件 | 默认地图 | 可见性 |
+| --- | --- | --- | --- | --- | --- |
+| Room 1 | `l4d2.service` | `27015/udp` | `server.cfg` | `hls_05` | Steam 组内/私密 |
+| Room 2 | `l4d2_2.service` | `27016/udp` | `server_2.cfg` | `zc_m1` | 公开可搜 |
+
+当前已安装的主要 VPK：
+- 地图：`gzzc7.3.vpk`（广州增城）、`tianti.vpk`（天梯）。
+- 插件：`left4bots2.vpk`、`left4lib.vpk`、`admin_system.vpk`。
+
+当前已验证的常用自定义地图入口：
+- `zc_m1` 至 `zc_m5`：广州增城。
+- `hls_05`：天梯 / Ladder to Heaven。
+- `dxyl1` 至 `dxyl4_f`：地心引力。
+- `l4d_yama_1` 至 `l4d_yama_5`：Yama。
+- `mtlgth001` 至 `mtlgth005`：MTL Gone To Hell。
+- `q_ancienttown`、`q_ancienttown2`、`q_fleshbridge1`、`q_fleshbridge2`、`q_fleshbridgesurvive`：HOME TOWN 相关关卡。
+
+---
+
 ## 0. 服务器基础环境配置
 
 在安装游戏之前，为了解决国内服务器访问 Steam 网络慢、下载失败的问题，我们执行了以下核心配置：
@@ -55,6 +78,8 @@ description: "管理 L4D2 服务器配置、地图安装及实时切换。当需
 ### A. 自动化脚本方式
 使用已配置的自动化脚本 `l4d2-add-map`。该脚本会自动处理代理、下载并拷贝到 `addons` 目录。
 
+注意：当前 `/usr/local/bin/l4d2-add-map` 安装完成后只会自动重启 `l4d2.service`。如果地图或 Mod 也要给 Room 2 使用，需要手动重启 `l4d2_2.service`，或后续把脚本改成支持选择目标房间。
+
 - **执行命令：**
 ```bash
 # 在服务器终端执行
@@ -63,6 +88,12 @@ sudo l4d2-add-map <Workshop_ID>
 *例如：安装地心引力地图*
 ```bash
 sudo l4d2-add-map 3526529688
+```
+
+双房间同步后按需重启：
+```bash
+ssh myubuntu "sudo systemctl restart l4d2"
+ssh myubuntu "sudo systemctl restart l4d2_2"
 ```
 
 ### B. 三方下载源 (Steam API 备选方案)
@@ -157,12 +188,46 @@ ls /opt/l4d2/left4dead2/maps/*.bsp | xargs -n1 basename | sed 's/\.bsp//'
 
 ## 7. 常见问题排查 (Troubleshooting)
 
-### A. KeyValues Error (RecursiveLoadFromBuffer)
+### A. 标准健康检查流程
+
+当需要判断服务器是否正常运行时，先查服务，再查端口，最后看日志：
+
+```bash
+ssh myubuntu "sudo systemctl status l4d2 --no-pager"
+ssh myubuntu "sudo systemctl status l4d2_2 --no-pager"
+ssh myubuntu "sudo systemctl show l4d2 l4d2_2 -p NRestarts -p ExecMainStatus -p ExecMainStartTimestamp --no-pager"
+ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"
+ssh myubuntu "sudo ss -H -lunp 'sport = :27016'"
+```
+
+最近错误快速过滤：
+```bash
+ssh myubuntu "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|denied|recursive|keyvalues|crash|segmentation' | tail -80"
+```
+
+判断标准：
+- `Active: active (running)` 且 `NRestarts=0`：systemd 层面稳定。
+- `ss` 能看到 `srcds_linux` 监听 `27015/udp` 或 `27016/udp`：游戏端口已绑定。
+- 日志有自定义模型或脚本报错，但服务未重启：通常优先按地图/Mod 兼容性排查，不要直接判断为服务器崩溃。
+
+### B. 当前已知日志噪声和风险点
+
+Room 2 最近较常见的自定义资源报错：
+- `models/tmp_mod/fallout_table1.mdl` 反复出现 `KeyValues Error`。
+- 部分模型出现 `Can't create physics object`。
+- 曾出现脚本变量缺失：`q_tankhealth1 does not exist`。
+- 偶发 `STEAMAUTH failure code 6/8`，通常和客户端 Steam 认证状态或网络有关。
+
+这些错误目前没有导致 `l4d2_2.service` 重启。若玩家反馈某张图卡死、模型异常、进图失败，再结合报错时间点定位对应地图资源。
+
+### C. KeyValues Error (RecursiveLoadFromBuffer)
 通常由 `missions/*.txt` 文件引起：
 - **原因1：存在 BOM 头。** 修复：`sudo sed -i '1s/^\xef\xbb\xbf//' <文件路径>`
 - **原因2：括号不匹配。** 修复：检查文件末尾是否缺失 `}`。
 
-### B. 权限问题
+如果错误指向 `.mdl`、`.vtx`、`.phy` 等模型资源，通常不是 `missions/*.txt` 的问题，而是地图或 Mod 自带资源兼容性问题。优先确认对应 VPK 是否完整、是否和客户端版本一致、是否存在多个版本冲突。
+
+### D. 权限问题
 若地图无法加载，确保 `steam` 用户拥有文件权限：
 ```bash
 sudo chown -R steam:steam /opt/l4d2/left4dead2/
@@ -176,6 +241,21 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
 
 1.  **Addons 目录** (`/opt/l4d2/left4dead2/addons/`): 这里存放着正在使用的 `.vpk` 文件。
 2.  **SteamCMD 缓存** (`/home/steam/Steam/steamapps/workshop/content/550/`): 这里存放着下载时的原始文件。
+
+### 当前容量基线
+
+2026-05-02 检查结果：
+- 根分区 `/`：40G 总量，约 25G 已用，13G 可用，使用率约 67%。
+- `/opt/l4d2/left4dead2/maps`：约 2.4G。
+- `/opt/l4d2/left4dead2/addons`：约 884M。
+- `/opt/l4d2/left4dead2/downloads`：约 2M。
+- `/home/steam/Steam/steamapps/workshop/content/550`：当前未发现明显缓存文件。
+
+容量检查命令：
+```bash
+ssh myubuntu "df -h /opt/l4d2"
+ssh myubuntu "sudo du -sh /opt/l4d2/left4dead2/addons /opt/l4d2/left4dead2/maps /opt/l4d2/left4dead2/missions /opt/l4d2/left4dead2/downloads 2>/dev/null"
+```
 
 ### 如何清理旧地图：
 - **删除 Addons 中的 VPK**: 
@@ -214,6 +294,15 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
   ssh myubuntu "sudo systemctl restart l4d2"
   ```
 
+### C. 敏感信息处理规范
+
+以下内容只允许保存在服务器配置或本机私有环境中，不要写入公开文档、Issue、提交说明或聊天记录：
+- `rcon_password` 的真实值。
+- `+sv_setsteamaccount` 后面的 GSLT。
+- Steam API、代理订阅、SSH 私钥、服务器登录凭据。
+
+展示命令输出前，尤其是 `systemctl status`、`systemctl cat`、`start_l4d2*.sh`、`server*.cfg`，需要先把 token 和密码替换成占位符，例如 `YOUR_RCON_PASSWORD`、`YOUR_GSLT_TOKEN`。
+
 ---
 
 ## 10. 常见问题 (FAQ)
@@ -239,7 +328,7 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
 
 ---
 
-## 9. 本地地图备份与应急恢复
+## 11. 本地地图备份与应急恢复
 
 为了防止 Steam 创意工坊同步失败 or 文件意外丢失，我们在本地建立了备份目录。
 
@@ -270,7 +359,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 
 ---
 
-## 11. 插件与 Mod 管理 (Addons Management)
+## 12. 插件与 Mod 管理 (Addons Management)
 
 除了地图，服务器还可以通过 VPK 插件增强功能（如提升 Bot 智商、增加管理员菜单）。
 
@@ -292,7 +381,8 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
     curl -L -o /tmp/mod.vpk "<file_url>"
     sudo cp /tmp/mod.vpk /opt/l4d2/left4dead2/addons/
     sudo chown steam:steam /opt/l4d2/left4dead2/addons/mod.vpk
-    sudo systemctl restart l4d2
+    sudo systemctl restart l4d2        # Room 1
+    sudo systemctl restart l4d2_2      # Room 2 如需同步生效
     ```
 
 ### C. 设置管理员权限 (EMS 插件)
@@ -304,7 +394,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 
 ---
 
-## 12. 多实例（多房间）配置指南
+## 13. 多实例（多房间）配置指南
 
 为了让更多朋友同时玩，可以在同一台服务器上运行多个 L4D2 实例。
 
@@ -317,11 +407,21 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 - **脚本隔离**：每个房间拥有独立的启动脚本（指定不同的端口 and 默认地图）。
 - **服务隔离**：每个房间配置独立的 Systemd 服务。
 
-### B. 第二个房间配置详情 (Room 2)
+### B. 当前房间配置详情
+
+Room 1：
+- **服务**：`l4d2.service`
+- **端口**：`27015`
+- **配置文件**：`server.cfg`
+- **默认地图**：`hls_05`
+- **启动脚本**：`/opt/l4d2/start_l4d2.sh`
+
+Room 2：
+- **服务**：`l4d2_2.service`
 - **端口**：`27016`
-- **默认地图**：`l4d_yama_1` (Yama)
+- **配置文件**：`server_2.cfg`
+- **默认地图**：`zc_m1`
 - **启动脚本**：`/opt/l4d2/start_l4d2_2.sh`
-- **系统服务**：`l4d2_2.service`
 
 ### C. 管理指令
 - **启动/重启房间 2**：
@@ -337,7 +437,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
   ssh myubuntu "sudo journalctl -u l4d2_2.service -f"
   ```
 
-### C. 房间曝光与可见性管理 (公开/私密切换)
+### D. 房间曝光与可见性管理 (公开/私密切换)
 如果您希望路人玩家能从“匹配模式”或“寻找房间”列表中搜到您的服务器，请确保以下参数：
 
 **1. 公开模式（路人可搜）：**
@@ -358,15 +458,17 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 13. 常用管理指令汇总
+## 14. 常用管理指令汇总
 
 - **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
 - **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
 - **查看实时日志**：`ssh myubuntu "sudo journalctl -u l4d2.service -f"`
+- **查看端口监听**：`ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"` 或 `27016`
+- **查看最近错误**：`ssh myubuntu "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|keyvalues' | tail -80"`
 
 ---
 
-## 14. 申请与配置 GSLT 提升权重
+## 15. 申请与配置 GSLT 提升权重
 
 **GSLT (Game Server Login Token)** 是让服务器获得“官方身份认证”的关键，能显著提升全球搜索排名。
 

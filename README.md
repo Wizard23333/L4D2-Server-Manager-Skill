@@ -22,7 +22,12 @@
 ## 🚀 2. L4D2 服务安装与运行
 - **安装路径**：`/opt/l4d2`，由非 root 用户 `steam` 运行。
 - **启动脚本**：定义核心参数如 `+sv_hibernate_when_empty 0` 以确保 RCON 可用。
-- **系统服务**：使用 Systemd 实现崩溃自启。
+- **系统服务**：使用 Systemd 实现崩溃自启，当前维护 `l4d2` 与 `l4d2_2` 两个房间。
+
+## 🧭 当前服务器形态
+- **Room 1**：`l4d2.service`，端口 `27015/udp`，默认地图 `hls_05`，偏 Steam 组内/私密。
+- **Room 2**：`l4d2_2.service`，端口 `27016/udp`，默认地图 `zc_m1`，公开可搜。
+- **常用检查**：服务状态、端口监听、最近错误日志已整理到详细 Skill 文档中。
 
 ## 🗺 3. 地图安装与管理
 - **自动安装**：使用 `l4d2-add-map` 脚本或 Steam API 下载。
@@ -55,7 +60,7 @@
 ---
 
 ## 📄 详细文档
-更多详细步骤和命令请参考 [L4D2_MAP_SKILL.md](file:///d:/workspace/L4D2-Server-Manager-Skill/L4D2_MAP_SKILL.md)。
+更多详细步骤和命令请参考 [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md)。
 
 ---
 

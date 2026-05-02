@@ -1,1 +1,5 @@
+__pycache__/
+*.py[cod]
+
+# Accidental duplicate directory with a leading space; keep the real .trae/ tracked.
  .trae/
