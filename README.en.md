@@ -10,7 +10,7 @@ This guide documents the setup and day-to-day management workflow for a Left 4 D
 
 This repository provides a server management skill / playbook and an operational reference for L4D2 server owners. It turns server health checks, map installation, RCON map switching, multi-room management, log triage, and secret redaction into a reusable workflow.
 
-The repository includes a `SKILL.md` that can be installed directly in Codex, but the workflow itself is not Codex-specific. You can also use it as project context for Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
+The repository includes [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), which can be installed directly in Codex, but the workflow itself is not Codex-specific. You can also use it as project context for Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
 
 Good fit for:
 
@@ -33,7 +33,7 @@ Not intended for:
 Copy the skill directory into the Codex user skills directory:
 
 ```powershell
-Copy-Item -Recurse .\.trae\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
 ```
 
 Restart Codex after installation so the skill can be loaded. You can then invoke it with `$l4d2-manager`, or simply describe an L4D2 server management task in the conversation.
@@ -42,11 +42,15 @@ Restart Codex after installation so the skill can be loaded. You can then invoke
 
 If your tool supports project rules, context files, or custom instructions, include these files as context:
 
-- `.trae/skills/l4d2-manager/SKILL.md`
+- `skills/l4d2-manager/SKILL.md`
 - `L4D2_MAP_SKILL.md`
 - `README.md`
 
 A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
+
+### Compatibility Path
+
+The repository still keeps `.trae/skills/l4d2-manager/SKILL.md` for Trae and existing workflows. For public distribution and new installs, prefer `skills/l4d2-manager/SKILL.md`.
 
 ### Recommended Setup
 
