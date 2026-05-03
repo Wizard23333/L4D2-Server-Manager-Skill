@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import struct
 import sys
 
@@ -12,8 +12,8 @@ def read_null_terminated_string(f):
     return "".join(chars)
 
 def extract_vpk(vpk_path, output_dir):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    output_root = Path(output_dir).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
 
     with open(vpk_path, 'rb') as f:
         # Read Header
@@ -54,12 +54,18 @@ def extract_vpk(vpk_path, output_dir):
                         break
                     crc, preload_bytes, archive_index, entry_offset, entry_size, terminator = struct.unpack('<IHHIIH', entry_data)
                     
-                    full_path = os.path.join(output_dir, path, f"{filename}.{extension}")
-                    dir_name = os.path.dirname(full_path)
-                    if not os.path.exists(dir_name):
-                        os.makedirs(dir_name)
+                    path_name = "" if path in (" ", ".") else path
+                    entry_path = Path(path_name) / f"{filename}.{extension}"
+                    full_path = (output_root / entry_path).resolve()
+                    if output_root != full_path and output_root not in full_path.parents:
+                        raise ValueError(f"Refusing to extract outside output directory: {entry_path}")
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                    # Store current position to come back to the tree
+                    preload_data = f.read(preload_bytes)
+                    if len(preload_data) != preload_bytes:
+                        raise EOFError(f"Unexpected EOF while reading preload data for {entry_path}")
+
+                    # Store current position after preload data to come back to the tree.
                     current_pos = f.tell()
                     
                     # Seek to the actual data
@@ -67,11 +73,8 @@ def extract_vpk(vpk_path, output_dir):
                     f.seek(data_start + entry_offset)
                     
                     with open(full_path, 'wb') as out_f:
-                        # Write preload data if any
-                        # Preload data is actually right after the 18-byte entry in the tree
-                        # We should have read it before seeking to the data section.
-                        # For simplicity, we skip it for now unless needed.
-                        
+                        out_f.write(preload_data)
+
                         # Write data in chunks to avoid MemoryError
                         remaining = entry_size
                         while remaining > 0:
@@ -82,7 +85,7 @@ def extract_vpk(vpk_path, output_dir):
                             out_f.write(data)
                             remaining -= len(data)
                     
-                    print(f"Extracted: {path}/{filename}.{extension}")
+                    print(f"Extracted: {entry_path}")
                     f.seek(current_pos)
 
 if __name__ == "__main__":
