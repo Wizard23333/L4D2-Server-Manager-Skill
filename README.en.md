@@ -10,7 +10,7 @@ This guide documents the setup and day-to-day management workflow for a Left 4 D
 
 This repository provides a server management skill / playbook and an operational reference for L4D2 server owners. It turns server health checks, map installation, RCON map switching, multi-room management, log triage, and secret redaction into a reusable workflow.
 
-The repository includes [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), which can be installed directly in Codex, but the workflow itself is not Codex-specific. You can also use it as project context for Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
+The repository includes [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), which can be installed or referenced directly, but the workflow itself is not tied to a single tool. You can use it as project context for Codex, Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
 
 Good fit for:
 
@@ -48,9 +48,15 @@ If your tool supports project rules, context files, or custom instructions, incl
 
 A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
 
-### Compatibility Path
+### Compatibility With Trae and Similar Tools
 
-The repository still keeps `.trae/skills/l4d2-manager/SKILL.md` for Trae and existing workflows. For public distribution and new installs, prefer `skills/l4d2-manager/SKILL.md`.
+The repository maintains a single canonical skill file: `skills/l4d2-manager/SKILL.md`. If a tool requires a fixed path such as `.trae/skills/...`, copy the canonical skill locally:
+
+```powershell
+Copy-Item -Recurse .\skills\l4d2-manager .\.trae\skills\l4d2-manager
+```
+
+This avoids tracking two identical `SKILL.md` files in the repository and reduces the risk of future drift.
 
 ### Recommended Setup
 

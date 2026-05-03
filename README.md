@@ -10,7 +10,7 @@
 
 这是一个面向 L4D2 服主的服务器管理 Skill / Playbook 与运维参考仓库。它把服务器检查、地图安装、RCON 切图、多房间管理、日志排障和敏感信息脱敏流程整理成一份可复用的操作手册。
 
-虽然仓库内提供了 Codex 可直接安装的 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)，但核心内容并不绑定 Codex。你也可以把这份文档作为 Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
+仓库内提供了可直接安装或引用的 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)，但核心内容并不绑定某一个工具。你也可以把这份文档作为 Codex、Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
 
 适合：
 - 已经有一台 Linux L4D2 专用服务器，希望用 AI IDE、Agent 或普通 SSH 流程辅助管理。
@@ -46,9 +46,15 @@ Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-ma
 
 推荐把任务描述写成“请按本仓库的 L4D2 server management playbook 执行”，并要求工具在执行前先确认目标房间、目标地图、是否涉及重启、是否涉及敏感信息输出。
 
-### 兼容路径
+### Trae 等工具的兼容使用
 
-仓库仍保留 `.trae/skills/l4d2-manager/SKILL.md`，方便 Trae 或既有工作流继续读取。对外分发和新安装建议优先使用 `skills/l4d2-manager/SKILL.md`。
+仓库只维护一份 canonical skill 文件：`skills/l4d2-manager/SKILL.md`。如果某个工具需要 `.trae/skills/...` 这样的固定目录，可以在本地复制一份：
+
+```powershell
+Copy-Item -Recurse .\skills\l4d2-manager .\.trae\skills\l4d2-manager
+```
+
+这样可以避免仓库中长期维护两份内容相同的 `SKILL.md`，降低后续更新时两边漂移的风险。
 
 ### 推荐准备
 
