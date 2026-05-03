@@ -41,7 +41,6 @@ Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-ma
 如果你的工具支持项目规则、上下文文档或自定义 instructions，可以把以下文件加入上下文：
 
 - `skills/l4d2-manager/SKILL.md`
-- `L4D2_MAP_SKILL.md`
 - `README.md`
 
 推荐把任务描述写成“请按本仓库的 L4D2 server management playbook 执行”，并要求工具在执行前先确认目标房间、目标地图、是否涉及重启、是否涉及敏感信息输出。
@@ -61,7 +60,7 @@ Copy-Item -Recurse .\skills\l4d2-manager .\.trae\skills\l4d2-manager
 - 在本地 `~/.ssh/config` 配好服务器别名，例如 `myubuntu`。
 - 在服务器侧使用非 root 用户运行 L4D2，例如 `steam`。
 - 将真实密码和 token 只保存在服务器配置或本机私有环境中。
-- 先阅读 [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 中的敏感信息处理规范和健康检查命令。
+- 先阅读 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) 中的敏感信息处理规范和健康检查命令。
 
 ### 示例提示词
 
@@ -132,7 +131,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 ---
 
 ## 📄 详细文档
-更多详细步骤和命令请参考 [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md)。
+更多详细步骤和命令请参考 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)。[L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 仅保留为旧链接兼容入口。
 
 ---
 

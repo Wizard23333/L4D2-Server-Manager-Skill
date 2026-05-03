@@ -43,7 +43,6 @@ Restart Codex after installation so the skill can be loaded. You can then invoke
 If your tool supports project rules, context files, or custom instructions, include these files as context:
 
 - `skills/l4d2-manager/SKILL.md`
-- `L4D2_MAP_SKILL.md`
 - `README.md`
 
 A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
@@ -63,7 +62,7 @@ This avoids tracking two identical `SKILL.md` files in the repository and reduce
 - Configure an SSH alias such as `myubuntu` in local `~/.ssh/config`.
 - Run the L4D2 dedicated server under a non-root user such as `steam`.
 - Keep real secrets only in server configuration files or private local environments.
-- Read the health-check and secret-redaction sections in [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) before using the workflow on a public server.
+- Read the health-check and secret-redaction sections in [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) before using the workflow on a public server.
 
 ### Example Prompts
 
@@ -151,7 +150,7 @@ Clean these locations regularly to avoid filling the server disk:
 
 ## Detailed Documentation
 
-See [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) for the full operational guide, command references, multi-room configuration, installed map list, and current server health-check workflow.
+See [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) for the full operational guide, command references, multi-room configuration, installed map list, and current server health-check workflow. [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) is kept only as a compatibility entry point for older links.
 
 ---
 
