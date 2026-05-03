@@ -6,6 +6,65 @@
 
 ---
 
+## 项目定位
+
+这是一个面向 L4D2 服主的服务器管理 Skill / Playbook 与运维参考仓库。它把服务器检查、地图安装、RCON 切图、多房间管理、日志排障和敏感信息脱敏流程整理成一份可复用的操作手册。
+
+虽然仓库内提供了 Codex 可直接安装的 `SKILL.md`，但核心内容并不绑定 Codex。你也可以把这份文档作为 Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
+
+适合：
+- 已经有一台 Linux L4D2 专用服务器，希望用 AI IDE、Agent 或普通 SSH 流程辅助管理。
+- 需要维护创意工坊地图、VPK、插件、RCON 和 Systemd 服务。
+- 想把个人服务器运维流程沉淀成可审计、可复用的文档。
+
+不适合：
+- 完全替代服务器安全加固或云厂商防火墙配置。
+- 保存真实 RCON 密码、GSLT、SSH 私钥、代理订阅等敏感信息。
+- 在未确认命令影响的情况下自动执行删除、重启或覆盖操作。
+
+---
+
+## 快速开始
+
+### 作为 Codex Skill 使用
+
+将仓库中的 skill 目录复制到 Codex 用户 skill 目录：
+
+```powershell
+Copy-Item -Recurse .\.trae\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+```
+
+安装后重启 Codex，让新 skill 被加载。后续可以在对话中使用 `$l4d2-manager`，或直接描述 L4D2 服务器管理任务。
+
+### 在其他 AI IDE 或 Agent 中使用
+
+如果你的工具支持项目规则、上下文文档或自定义 instructions，可以把以下文件加入上下文：
+
+- `.trae/skills/l4d2-manager/SKILL.md`
+- `L4D2_MAP_SKILL.md`
+- `README.md`
+
+推荐把任务描述写成“请按本仓库的 L4D2 server management playbook 执行”，并要求工具在执行前先确认目标房间、目标地图、是否涉及重启、是否涉及敏感信息输出。
+
+### 推荐准备
+
+- 在本地 `~/.ssh/config` 配好服务器别名，例如 `myubuntu`。
+- 在服务器侧使用非 root 用户运行 L4D2，例如 `steam`。
+- 将真实密码和 token 只保存在服务器配置或本机私有环境中。
+- 先阅读 [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 中的敏感信息处理规范和健康检查命令。
+
+### 示例提示词
+
+```text
+$l4d2-manager 检查当前两个房间的运行状态
+$l4d2-manager 查看最近 24 小时的 L4D2 错误日志并判断是否影响玩家
+$l4d2-manager 帮我把 Workshop 地图 3526529688 安装到服务器
+$l4d2-manager 将 Room 2 切换到 zc_m1，并说明是否需要重启
+$l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
+```
+
+---
+
 ## 🌟 核心特性
 - **网络优化**：针对国内环境的 Steam CDN 节点加速方案。
 - **自动化管理**：集成 Clash + Proxychains 的网络代理方案，确保 `steamcmd` 稳定运行。
@@ -13,6 +72,7 @@
 - **快速切图**：详细的 RCON 远程指令集，实现秒级地图切换。
 - **远程管理**：配置 SSH 别名，简化服务器维护操作。
 - **故障排查**：针对常见报错（如 KeyValues Error）的修复指南。
+- **安全脱敏**：公开文档只使用占位符，不记录真实 RCON、GSLT、Steam token 或 SSH 凭据。
 
 ---
 

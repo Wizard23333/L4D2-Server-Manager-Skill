@@ -6,6 +6,67 @@ This guide documents the setup and day-to-day management workflow for a Left 4 D
 
 ---
 
+## Project Scope
+
+This repository provides a server management skill / playbook and an operational reference for L4D2 server owners. It turns server health checks, map installation, RCON map switching, multi-room management, log triage, and secret redaction into a reusable workflow.
+
+The repository includes a `SKILL.md` that can be installed directly in Codex, but the workflow itself is not Codex-specific. You can also use it as project context for Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
+
+Good fit for:
+
+- Server owners who already run a Linux-based L4D2 dedicated server and want AI IDE, agent, or manual SSH-assisted operations.
+- Setups that manage Workshop maps, VPK files, addons, RCON, and Systemd services.
+- Maintainers who want a documented, auditable workflow instead of one-off shell commands.
+
+Not intended for:
+
+- Replacing server hardening, cloud firewall rules, or general Linux security work.
+- Storing real RCON passwords, GSLT values, SSH private keys, proxy subscriptions, or Steam credentials.
+- Blindly running destructive commands without reviewing the target service, path, and expected impact.
+
+---
+
+## Quick Start
+
+### Use as a Codex Skill
+
+Copy the skill directory into the Codex user skills directory:
+
+```powershell
+Copy-Item -Recurse .\.trae\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+```
+
+Restart Codex after installation so the skill can be loaded. You can then invoke it with `$l4d2-manager`, or simply describe an L4D2 server management task in the conversation.
+
+### Use With Other AI IDEs or Agents
+
+If your tool supports project rules, context files, or custom instructions, include these files as context:
+
+- `.trae/skills/l4d2-manager/SKILL.md`
+- `L4D2_MAP_SKILL.md`
+- `README.md`
+
+A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
+
+### Recommended Setup
+
+- Configure an SSH alias such as `myubuntu` in local `~/.ssh/config`.
+- Run the L4D2 dedicated server under a non-root user such as `steam`.
+- Keep real secrets only in server configuration files or private local environments.
+- Read the health-check and secret-redaction sections in [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) before using the workflow on a public server.
+
+### Example Prompts
+
+```text
+$l4d2-manager check the current status of both rooms
+$l4d2-manager inspect the last 24 hours of L4D2 errors and tell me whether players are affected
+$l4d2-manager help me install Workshop map 3526529688 on the server
+$l4d2-manager switch Room 2 to zc_m1 and tell me whether a restart is required
+$l4d2-manager inspect addons, maps, and workshop cache usage, then suggest cleanup steps
+```
+
+---
+
 ## Key Features
 
 - **Steam connectivity workarounds**: Hosts and proxy patterns for servers whose routes to Steam or the Workshop are slow or unreliable.
@@ -14,6 +75,7 @@ This guide documents the setup and day-to-day management workflow for a Left 4 D
 - **Fast map switching**: RCON commands for changing maps without restarting the server.
 - **Remote operations**: SSH alias usage for repeatable server maintenance.
 - **Troubleshooting notes**: Practical fixes for common issues such as KeyValues errors, missing resources, and repeated client downloads.
+- **Secret redaction**: Public docs use placeholders only and do not record real RCON passwords, GSLT values, Steam tokens, or SSH credentials.
 
 ---
 
