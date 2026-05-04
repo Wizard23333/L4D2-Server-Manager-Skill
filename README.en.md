@@ -47,6 +47,8 @@ If your tool supports project rules, context files, or custom instructions, incl
 
 A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
 
+See [AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md) for quick setup instructions for Codex, Claude Code, Windsurf, Cline, Cursor, GitHub Copilot, and Continue.
+
 ### Compatibility With Trae and Similar Tools
 
 The repository maintains a single canonical skill file: `skills/l4d2-manager/SKILL.md`. If a tool requires a fixed path such as `.trae/skills/...`, copy the canonical skill locally:
@@ -150,7 +152,7 @@ Clean these locations regularly to avoid filling the server disk:
 
 ## Detailed Documentation
 
-See [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) for the full operational guide, command references, multi-room configuration, installed map list, and current server health-check workflow. [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) is kept only as a compatibility entry point for older links.
+See [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) for the full operational guide, command references, multi-room configuration, installed map list, and current server health-check workflow. See [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md) for AI IDE setup notes. [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) is kept only as a compatibility entry point for older links.
 
 ---
 

@@ -45,6 +45,8 @@ Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-ma
 
 推荐把任务描述写成“请按本仓库的 L4D2 server management playbook 执行”，并要求工具在执行前先确认目标房间、目标地图、是否涉及重启、是否涉及敏感信息输出。
 
+不同 AI IDE 的快速安装方式请参考 [AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md)，其中覆盖 Codex、Claude Code、Windsurf、Cline、Cursor、GitHub Copilot 和 Continue。
+
 ### Trae 等工具的兼容使用
 
 仓库只维护一份 canonical skill 文件：`skills/l4d2-manager/SKILL.md`。如果某个工具需要 `.trae/skills/...` 这样的固定目录，可以在本地复制一份：
@@ -131,7 +133,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 ---
 
 ## 📄 详细文档
-更多详细步骤和命令请参考 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)。[L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 仅保留为旧链接兼容入口。
+更多详细步骤和命令请参考 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)。不同 AI IDE 的安装方式见 [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md)。[L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 仅保留为旧链接兼容入口。
 
 ---
 
