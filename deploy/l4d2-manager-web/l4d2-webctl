@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+ROOMS = {
+    "room1": Path("/opt/l4d2/start_l4d2.sh"),
+    "room2": Path("/opt/l4d2/start_l4d2_2.sh"),
+}
+MAPS_DIR = Path("/opt/l4d2/left4dead2/maps")
+GAME_DIR = Path("/opt/l4d2/left4dead2")
+ADDONS_DIR = GAME_DIR / "addons"
+DISABLED_ADDONS_DIR = GAME_DIR / "addons_disabled"
+DOWNLOAD_DIR = Path("/tmp/l4d2-manager-web-downloads")
+VPK_EXTRACTOR = Path("/opt/l4d2-manager-web/vpk_extract.py")
+MAP_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$")
+WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
+ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def read_null_string(handle):
+    data = []
+    while True:
+        char = handle.read(1)
+        if not char or char == b"\x00":
+            break
+        data.append(char)
+    return b"".join(data).decode("utf-8", errors="ignore")
+
+
+def vpk_maps(vpk_path):
+    maps = set()
+    try:
+        with open(vpk_path, "rb") as handle:
+            header = handle.read(8)
+            if len(header) != 8:
+                return maps
+            signature, version = struct.unpack("<II", header)
+            if signature != 0x55AA1234:
+                return maps
+            tree_size_data = handle.read(4)
+            if len(tree_size_data) != 4:
+                return maps
+            if version == 2:
+                handle.read(16)
+            header_size = 12 if version == 1 else 28
+            handle.seek(header_size)
+            while True:
+                extension = read_null_string(handle)
+                if not extension:
+                    break
+                while True:
+                    path = read_null_string(handle)
+                    if not path:
+                        break
+                    while True:
+                        filename = read_null_string(handle)
+                        if not filename:
+                            break
+                        entry_data = handle.read(18)
+                        if len(entry_data) != 18:
+                            return maps
+                        _crc, preload_bytes, _archive_index, _entry_offset, _entry_size, _term = struct.unpack("<IHHIIH", entry_data)
+                        handle.read(preload_bytes)
+                        if extension.lower() == "bsp" and path.lower() == "maps":
+                            maps.add(filename.lower().replace(" ", "_"))
+    except OSError:
+        return set()
+    return maps
+
+
+def available_maps():
+    maps = {path.stem for path in MAPS_DIR.glob("*.bsp")}
+    for vpk in ADDONS_DIR.glob("*.vpk"):
+        maps.update(vpk_maps(vpk))
+    return maps
+
+
+def set_default_map(room, map_name):
+    if room not in ROOMS:
+        fail("unknown room")
+    if not MAP_RE.match(map_name):
+        fail("invalid map name")
+    if map_name not in available_maps():
+        fail("map is not installed")
+
+    script = ROOMS[room]
+    text = script.read_text(encoding="utf-8", errors="replace")
+    updated, count = re.subn(r"(?<=\s)\+map\s+\S+", f"+map {map_name}", text, count=1)
+    if count != 1:
+        fail("script does not contain one +map parameter")
+
+    backup = script.with_name(f"{script.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(script, backup)
+    script.write_text(updated, encoding="utf-8")
+    print(f"updated {script} to {map_name}; backup {backup}")
+
+
+def safe_title(value):
+    value = value.strip() or "workshop_item"
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    value = value.strip("._-")
+    return (value or "workshop_item")[:80]
+
+
+def chown_steam(path):
+    subprocess.run(["/usr/bin/chown", "-R", "steam:steam", str(path)], check=False)
+
+
+def fetch_workshop_details(workshop_id):
+    data = urllib.parse.urlencode(
+        {"itemcount": "1", "publishedfileids[0]": workshop_id}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/",
+        data=data,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+    if str(details.get("result")) != "1":
+        fail(f"Steam API returned result {details.get('result', 'unknown')}")
+    file_url = details.get("file_url")
+    if not file_url or not file_url.startswith(("http://", "https://")):
+        fail("Steam API did not return a downloadable file_url")
+    return details
+
+
+def download_file(url, destination):
+    tmp = destination.with_suffix(destination.suffix + ".part")
+    with urllib.request.urlopen(url, timeout=60) as response, open(tmp, "wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    tmp.replace(destination)
+
+
+def install_workshop(kind, workshop_id):
+    if kind not in {"map", "mod"}:
+        fail("kind must be map or mod")
+    if not WORKSHOP_ID_RE.match(workshop_id):
+        fail("invalid workshop id")
+    ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    details = fetch_workshop_details(workshop_id)
+    title = safe_title(details.get("title", "workshop_item"))
+    destination = ADDONS_DIR / f"{kind}_{workshop_id}_{title}.vpk"
+    download_target = DOWNLOAD_DIR / f"{workshop_id}.vpk"
+    print(f"downloading {details.get('title', workshop_id)}")
+    download_file(details["file_url"], download_target)
+    shutil.copy2(download_target, destination)
+    chown_steam(destination)
+
+    if kind == "map":
+        if not VPK_EXTRACTOR.is_file():
+            fail(f"VPK extractor missing: {VPK_EXTRACTOR}")
+        result = subprocess.run(
+            ["/usr/bin/python3", str(VPK_EXTRACTOR), str(destination), str(GAME_DIR)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            fail(result.stderr or result.stdout or "VPK extraction failed")
+        for name in ("maps", "missions", "materials", "models", "sound", "scripts"):
+            path = GAME_DIR / name
+            if path.exists():
+                chown_steam(path)
+
+    print(f"installed {destination.name}")
+
+
+def set_addon_state(filename, state):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        fail("invalid addon filename")
+    if state not in {"enabled", "disabled"}:
+        fail("state must be enabled or disabled")
+    ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+    DISABLED_ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    source_dir = DISABLED_ADDONS_DIR if state == "enabled" else ADDONS_DIR
+    target_dir = ADDONS_DIR if state == "enabled" else DISABLED_ADDONS_DIR
+    source = source_dir / filename
+    target = target_dir / filename
+    if not source.is_file():
+        fail(f"addon not found in {source_dir}")
+    if target.exists():
+        fail(f"target already exists: {target}")
+    shutil.move(str(source), str(target))
+    chown_steam(target)
+    print(f"{filename} {state}")
+
+
+def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "set-default-map":
+        if len(sys.argv) != 4:
+            fail("usage: l4d2-webctl set-default-map <room1|room2> <map>")
+        set_default_map(sys.argv[2], sys.argv[3])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "install-workshop":
+        if len(sys.argv) != 4:
+            fail("usage: l4d2-webctl install-workshop <map|mod> <workshop_id>")
+        install_workshop(sys.argv[2], sys.argv[3])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "set-addon-state":
+        if len(sys.argv) != 4:
+            fail("usage: l4d2-webctl set-addon-state <filename> <enabled|disabled>")
+        set_addon_state(sys.argv[2], sys.argv[3])
+        return
+    fail("usage: l4d2-webctl <set-default-map|install-workshop|set-addon-state> ...")
+
+
+if __name__ == "__main__":
+    main()

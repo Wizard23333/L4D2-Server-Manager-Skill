@@ -1,0 +1,17 @@
+[Unit]
+Description=L4D2 Manager Web
+After=network.target
+
+[Service]
+Type=simple
+User=l4d2web
+Group=l4d2web
+EnvironmentFile=/etc/l4d2-manager-web.env
+ExecStart=/usr/bin/python3 /opt/l4d2-manager-web/app.py
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
