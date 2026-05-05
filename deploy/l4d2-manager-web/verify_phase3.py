@@ -49,6 +49,24 @@ status, invalid_install = request(
 )
 print("invalid_install", status, invalid_install["message"])
 
+status, search = request("/api/catalog/search?query=Run%20To%20The%20Hills&kind=map")
+print("catalog_search", status, [(item["source"], item["id"]) for item in search["results"]])
+assert any(item["source"] == "workshop" and item["id"] == "2232584588" for item in search["results"])
+assert any(item["source"] == "gamemaps" and item["id"] == "2559" for item in search["results"])
+
+status, invalid_search = request(
+    "/api/catalog/search?query=..%2Fbad&kind=map",
+    expect_error=True,
+)
+print("invalid_search", status, invalid_search["message"])
+
+status, invalid_catalog_install = request(
+    "/api/catalog/install",
+    {"source": "gamemaps", "kind": "mod", "id": "2559"},
+    expect_error=True,
+)
+print("invalid_catalog_install", status, invalid_catalog_install["message"])
+
 status, invalid_addon = request(
     "/api/addon/state",
     {"filename": "../bad.vpk", "state": "disabled"},

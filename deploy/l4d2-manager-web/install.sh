@@ -44,7 +44,8 @@ fi
 
 visudo -cf "$SUDOERS_FILE"
 systemctl daemon-reload
-systemctl enable --now l4d2-manager-web
+systemctl enable l4d2-manager-web
+systemctl restart l4d2-manager-web
 systemctl status l4d2-manager-web --no-pager
 
 echo

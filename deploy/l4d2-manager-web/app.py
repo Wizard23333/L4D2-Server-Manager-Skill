@@ -8,10 +8,13 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 
 ROOMS = {
@@ -38,9 +41,41 @@ ADMIN_PASSWORD = os.environ.get("L4D2_WEB_PASSWORD", "")
 AUTH_REALM = "L4D2 Manager"
 WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
+CATALOG_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.,:()'!&+-]{1,80}$")
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 EXCLUDED_CAMPAIGN_MAPS = {"c5m1_waterfront_sndscape"}
+STEAM_DETAILS_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+STEAM_QUERY_URL = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
+STEAM_WORKSHOP_URL = "https://steamcommunity.com/sharedfiles/filedetails/?id={id}"
+GAMEMAPS_DETAILS_URL = "https://www.gamemaps.com/details/{id}"
+
+KNOWN_CATALOG_ITEMS = [
+    {
+        "source": "workshop",
+        "id": "2232584588",
+        "title": "Run to the Hills (L4D2)",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="2232584588"),
+        "size": "317.9 MB",
+        "summary": "5-map campaign. Steam API currently returns a downloadable VPK.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["run to the hills", "runtothehills", "run hills"],
+    },
+    {
+        "source": "gamemaps",
+        "id": "2559",
+        "title": "Run To The Hills",
+        "kind": "map",
+        "url": GAMEMAPS_DETAILS_URL.format(id="2559"),
+        "size": "131.3 MB",
+        "summary": "5-map GameMaps campaign package: runtothehills.vpk.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["run to the hills", "runtothehills", "run hills"],
+    },
+]
 
 OFFICIAL_CAMPAIGNS = [
     {
@@ -582,13 +617,219 @@ def update_job(job_id, **fields):
         JOBS[job_id].update(fields)
 
 
-def install_workshop_job(job_id, kind, workshop_id):
-    update_job(job_id, status="running", message="Installing...")
-    result = run_cmd(
-        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-workshop", kind, workshop_id],
-        timeout=1800,
+def http_json(url, data=None, timeout=12):
+    body = None
+    method = "GET"
+    headers = {"User-Agent": "L4D2Manager/0.1"}
+    if data is not None:
+        body = urllib.parse.urlencode(data).encode("utf-8")
+        method = "POST"
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def format_bytes(value):
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{size} B"
+        size /= 1024
+    return ""
+
+
+def catalog_item(source, item_id, title, kind, url, size="", summary="", installable=True, reason=""):
+    return {
+        "source": source,
+        "id": str(item_id),
+        "title": title or str(item_id),
+        "kind": kind,
+        "url": url,
+        "size": size,
+        "summary": summary,
+        "installable": bool(installable),
+        "reason": reason,
+    }
+
+
+def known_catalog_results(query, kind):
+    normalized = re.sub(r"\s+", " ", query.lower()).strip()
+    results = []
+    for item in KNOWN_CATALOG_ITEMS:
+        if item["kind"] != kind:
+            continue
+        haystack = " ".join([item["title"].lower(), *item.get("aliases", [])])
+        if normalized in haystack or any(alias in normalized for alias in item.get("aliases", [])):
+            results.append(catalog_item(
+                item["source"],
+                item["id"],
+                item["title"],
+                item["kind"],
+                item["url"],
+                item["size"],
+                item["summary"],
+                item["installable"],
+                item["reason"],
+            ))
+    return results
+
+
+def workshop_detail_result(workshop_id, kind):
+    try:
+        payload = http_json(STEAM_DETAILS_URL, {"itemcount": "1", "publishedfileids[0]": workshop_id})
+        details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return catalog_item(
+            "workshop",
+            workshop_id,
+            f"Workshop {workshop_id}",
+            kind,
+            STEAM_WORKSHOP_URL.format(id=workshop_id),
+            "",
+            "",
+            False,
+            f"Steam lookup failed: {exc}",
+        )
+    title = details.get("title") or f"Workshop {workshop_id}"
+    installable = str(details.get("result")) == "1" and bool(details.get("file_url"))
+    reason = "" if installable else f"Steam API returned result {details.get('result', 'unknown')} without file_url"
+    return catalog_item(
+        "workshop",
+        workshop_id,
+        title,
+        kind,
+        STEAM_WORKSHOP_URL.format(id=workshop_id),
+        format_bytes(details.get("file_size")),
+        (details.get("description") or "").replace("\r", " ").replace("\n", " ")[:220],
+        installable,
+        reason,
     )
-    message = result["stdout"] or result["stderr"] or "Install finished"
+
+
+def workshop_search_results(query, kind):
+    results = []
+    if WORKSHOP_ID_RE.match(query):
+        results.append(workshop_detail_result(query, kind))
+        return results
+    # QueryFiles usually requires a Steam Web API key. Keep this best-effort,
+    # and rely on the curated fallback for known campaigns when it is unavailable.
+    params = {
+        "query_type": "12",
+        "cursor": "*",
+        "numperpage": "5",
+        "creator_appid": "550",
+        "appid": "550",
+        "search_text": query,
+        "filetype": "0",
+        "return_tags": "1",
+        "return_short_description": "1",
+    }
+    try:
+        url = f"{STEAM_QUERY_URL}?{urllib.parse.urlencode(params)}"
+        payload = http_json(url, timeout=8)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return results
+    for details in payload.get("response", {}).get("publishedfiledetails", [])[:5]:
+        item_id = details.get("publishedfileid")
+        if not item_id:
+            continue
+        results.append(catalog_item(
+            "workshop",
+            item_id,
+            details.get("title") or f"Workshop {item_id}",
+            kind,
+            STEAM_WORKSHOP_URL.format(id=item_id),
+            format_bytes(details.get("file_size")),
+            details.get("short_description") or "",
+            True,
+            "",
+        ))
+    return results
+
+
+def gamemaps_search_results(query, kind):
+    if kind != "map":
+        return []
+    results = []
+    if WORKSHOP_ID_RE.match(query):
+        results.append(catalog_item(
+            "gamemaps",
+            query,
+            f"GameMaps {query}",
+            "map",
+            GAMEMAPS_DETAILS_URL.format(id=query),
+            "",
+            "GameMaps numeric details id.",
+            True,
+            "",
+        ))
+        return results
+    results.extend([item for item in known_catalog_results(query, "map") if item["source"] == "gamemaps"])
+    # Best-effort HTML search. GameMaps may block automated requests, so this
+    # must never be the only way a known result can appear.
+    try:
+        search_url = "https://www.gamemaps.com/search?" + urllib.parse.urlencode({"q": query})
+        request = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            html_text = response.read(256 * 1024).decode("utf-8", errors="replace")
+    except (OSError, urllib.error.URLError):
+        return results
+    for match in re.finditer(r'href=["\'](?:https://www\.gamemaps\.com)?/details/(\d+)["\'][^>]*>([^<]+)', html_text):
+        item_id, raw_title = match.groups()
+        title = re.sub(r"\s+", " ", raw_title).strip()
+        if not title:
+            continue
+        item = catalog_item("gamemaps", item_id, title, "map", GAMEMAPS_DETAILS_URL.format(id=item_id), "", "", True, "")
+        if all(existing["source"] != "gamemaps" or existing["id"] != item_id for existing in results):
+            results.append(item)
+        if len(results) >= 6:
+            break
+    return results
+
+
+def search_catalog(query, kind):
+    query = query.strip()
+    if kind not in {"map", "mod"}:
+        return {"ok": False, "message": "Kind must be map or mod"}
+    if len(query) < 3:
+        return {"ok": False, "message": "Search query must be at least 3 characters"}
+    if not CATALOG_QUERY_RE.match(query) and not WORKSHOP_ID_RE.match(query):
+        return {"ok": False, "message": "Search query contains unsupported characters"}
+    results = []
+    results.extend(known_catalog_results(query, kind))
+    if len(results) >= 2 and not WORKSHOP_ID_RE.match(query):
+        return {"ok": True, "query": query, "kind": kind, "results": results[:10]}
+    results.extend(workshop_search_results(query, kind))
+    results.extend(gamemaps_search_results(query, kind))
+    deduped = []
+    seen = set()
+    for item in results:
+        key = (item["source"], item["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return {"ok": True, "query": query, "kind": kind, "results": deduped[:10]}
+
+
+def install_catalog_job(job_id, source, kind, item_id):
+    update_job(job_id, status="running", message="Installing...")
+    if source == "workshop":
+        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-workshop", kind, item_id]
+    elif source == "gamemaps" and kind == "map":
+        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-gamemaps-map", item_id]
+    else:
+        update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
+        return
+    result = run_cmd(command, timeout=1800)
+    if result["ok"]:
+        message = result["stdout"] or result["stderr"] or "Install finished"
+    else:
+        message = "\n".join(part for part in (result["stdout"], result["stderr"]) if part) or "Install failed"
     update_job(
         job_id,
         status="succeeded" if result["ok"] else "failed",
@@ -597,16 +838,24 @@ def install_workshop_job(job_id, kind, workshop_id):
     )
 
 
-def create_install_job(kind, workshop_id):
+def create_catalog_install_job(source, kind, item_id, title="", url=""):
+    if source not in {"workshop", "gamemaps"}:
+        return {"ok": False, "message": "Source must be workshop or gamemaps"}
     if kind not in {"map", "mod"}:
         return {"ok": False, "message": "Kind must be map or mod"}
-    if not WORKSHOP_ID_RE.match(workshop_id):
-        return {"ok": False, "message": "Workshop ID must be numeric"}
+    if source == "gamemaps" and kind != "map":
+        return {"ok": False, "message": "GameMaps installs are map-only"}
+    if not WORKSHOP_ID_RE.match(item_id):
+        return {"ok": False, "message": "Catalog id must be numeric"}
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
+        "source": source,
         "kind": kind,
-        "workshop_id": workshop_id,
+        "workshop_id": item_id if source == "workshop" else "",
+        "catalog_id": item_id,
+        "title": title,
+        "url": url,
         "status": "queued",
         "message": "Queued",
         "created_at": int(time.time()),
@@ -615,12 +864,24 @@ def create_install_job(kind, workshop_id):
     with JOBS_LOCK:
         JOBS[job_id] = job
     thread = threading.Thread(
-        target=install_workshop_job,
-        args=(job_id, kind, workshop_id),
+        target=install_catalog_job,
+        args=(job_id, source, kind, item_id),
         daemon=True,
     )
     thread.start()
     return {"ok": True, "message": "Install queued", "job": job}
+
+
+def create_install_job(kind, workshop_id):
+    if not WORKSHOP_ID_RE.match(workshop_id):
+        return {"ok": False, "message": "Workshop ID must be numeric"}
+    return create_catalog_install_job(
+        "workshop",
+        kind,
+        workshop_id,
+        f"Workshop {workshop_id}",
+        STEAM_WORKSHOP_URL.format(id=workshop_id),
+    )
 
 
 def set_addon_state(filename, state):
@@ -666,6 +927,10 @@ def render_page():
     .field { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     input { height: 34px; min-width: 180px; border: 1px solid #b8c1ba; border-radius: 7px; background: #fff; padding: 0 9px; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+    .catalog-results { display: grid; gap: 10px; margin-top: 12px; }
+    .catalog-item { border-top: 1px solid #e4e7e3; padding-top: 10px; display: grid; gap: 8px; }
+    .catalog-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+    a { color: #1f5f46; }
     .maps { margin-top: 16px; }
     .maps-list { display: grid; gap: 10px; font-size: 13px; line-height: 1.8; }
     details { border-top: 1px solid #e4e7e3; padding-top: 8px; }
@@ -692,17 +957,20 @@ def render_page():
     <section class="stack">
       <section class="card">
         <div class="room-head">
-          <div class="name">Workshop Install</div>
-          <span class="pill">Map / Mod</span>
+          <div class="name">Search & Install</div>
+          <span class="pill">Workshop / GameMaps</span>
         </div>
         <div class="field" style="margin-top: 14px">
-          <input id="workshop-id" inputmode="numeric" autocomplete="off" placeholder="Workshop ID">
-          <select id="workshop-kind">
+          <input id="catalog-query" autocomplete="off" placeholder="Run To The Hills">
+          <select id="catalog-kind">
             <option value="map">Map</option>
             <option value="mod">Mod</option>
           </select>
-          <button id="install-workshop">Install</button>
+          <button id="catalog-search">Search</button>
+          <input id="workshop-id" inputmode="numeric" autocomplete="off" placeholder="Workshop ID">
+          <button id="install-workshop">Install ID</button>
         </div>
+        <div id="catalog-results" class="catalog-results"></div>
         <div id="jobs" style="margin-top: 12px"></div>
       </section>
       <section class="card">
@@ -737,6 +1005,7 @@ def render_page():
     const addonCountEl = document.querySelector("#addon-count");
     const addonsEl = document.querySelector("#addons");
     const jobsEl = document.querySelector("#jobs");
+    const catalogResultsEl = document.querySelector("#catalog-results");
     const noticeEl = document.querySelector("#notice");
     let currentState = null;
 
@@ -819,9 +1088,35 @@ def render_page():
       }
       jobsEl.innerHTML = jobs.map(job => `<div class="job">
         <strong>${esc(job.status)}</strong>
-        <span class="mono">${esc(job.kind)} ${esc(job.workshop_id)}</span>
+        <span class="mono">${esc(job.source || "workshop")} ${esc(job.kind)} ${esc(job.catalog_id || job.workshop_id)}</span>
+        ${job.title ? `<div>${esc(job.title)}</div>` : ""}
         <div class="muted">${esc(job.message)}</div>
       </div>`).join("");
+    }
+
+    function renderCatalogResults(results) {
+      if (!results.length) {
+        catalogResultsEl.innerHTML = `<div class="muted">No matching maps or mods found.</div>`;
+        return;
+      }
+      catalogResultsEl.innerHTML = results.map(item => {
+        const disabled = item.installable ? "" : " disabled";
+        const source = item.source === "gamemaps" ? "GameMaps" : "Workshop";
+        const reason = item.reason ? `<div class="muted">${esc(item.reason)}</div>` : "";
+        const size = item.size ? `<span class="pill">${esc(item.size)}</span>` : "";
+        return `<div class="catalog-item">
+          <div class="catalog-head">
+            <div><strong>${esc(item.title)}</strong> <span class="pill">${source}</span> ${size}</div>
+            <div class="actions">
+              <a href="${esc(item.url)}" target="_blank" rel="noreferrer">Open</a>
+              <button data-catalog-install="${esc(item.id)}" data-catalog-source="${esc(item.source)}" data-catalog-kind="${esc(item.kind)}" data-catalog-title="${esc(item.title)}" data-catalog-url="${esc(item.url)}"${disabled}>Install</button>
+            </div>
+          </div>
+          <div class="muted mono">${esc(item.kind)} ${esc(item.id)}</div>
+          ${item.summary ? `<div class="muted">${esc(item.summary)}</div>` : ""}
+          ${reason}
+        </div>`;
+      }).join("");
     }
 
     function mapLabel(map) {
@@ -931,12 +1226,38 @@ def render_page():
 
     async function installWorkshop() {
       const workshopId = document.querySelector("#workshop-id").value.trim();
-      const kind = document.querySelector("#workshop-kind").value;
+      const kind = document.querySelector("#catalog-kind").value;
       noticeEl.textContent = "Queueing install...";
       const res = await fetch("/api/workshop/install", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({kind, workshop_id: workshopId})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function searchCatalog() {
+      const query = document.querySelector("#catalog-query").value.trim();
+      const kind = document.querySelector("#catalog-kind").value;
+      noticeEl.textContent = "Searching...";
+      const res = await fetch(`/api/catalog/search?${new URLSearchParams({query, kind})}`);
+      const data = await res.json();
+      if (!res.ok) {
+        noticeEl.textContent = data.message || "Search failed";
+        return;
+      }
+      renderCatalogResults(data.results || []);
+      noticeEl.textContent = `${(data.results || []).length} result(s)`;
+    }
+
+    async function installCatalog(source, kind, id, title, url) {
+      noticeEl.textContent = "Queueing install...";
+      const res = await fetch("/api/catalog/install", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({source, kind, id, title, url})
       });
       const data = await res.json();
       noticeEl.textContent = data.message;
@@ -956,9 +1277,31 @@ def render_page():
     }
 
     document.querySelector("#refresh").addEventListener("click", loadState);
+    document.querySelector("#catalog-search").addEventListener("click", event => {
+      event.target.disabled = true;
+      searchCatalog().finally(() => event.target.disabled = false);
+    });
+    document.querySelector("#catalog-query").addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        searchCatalog();
+      }
+    });
     document.querySelector("#install-workshop").addEventListener("click", event => {
       event.target.disabled = true;
       installWorkshop().finally(() => event.target.disabled = false);
+    });
+    catalogResultsEl.addEventListener("click", event => {
+      const id = event.target.dataset.catalogInstall;
+      if (!id) return;
+      event.target.disabled = true;
+      installCatalog(
+        event.target.dataset.catalogSource,
+        event.target.dataset.catalogKind,
+        id,
+        event.target.dataset.catalogTitle || "",
+        event.target.dataset.catalogUrl || ""
+      ).finally(() => event.target.disabled = false);
     });
     roomsEl.addEventListener("click", event => {
       const room = event.target.dataset.restart;
@@ -1039,7 +1382,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             self.require_auth()
             return
-        if self.path == "/" or self.path == "/index.html":
+        parsed = urlparse(self.path)
+        if parsed.path == "/" or parsed.path == "/index.html":
             payload = render_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1047,8 +1391,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        if self.path == "/api/state":
+        if parsed.path == "/api/state":
             self.send_json(200, snapshot())
+            return
+        if parsed.path == "/api/catalog/search":
+            fields = parse_qs(parsed.query)
+            query = fields.get("query", [""])[0]
+            kind = fields.get("kind", ["map"])[0]
+            result = search_catalog(query, kind)
+            self.send_json(200 if result["ok"] else 400, result)
             return
         self.send_error(404)
 
@@ -1075,6 +1426,15 @@ class Handler(BaseHTTPRequestHandler):
             kind = fields.get("kind", [""])[0]
             workshop_id = fields.get("workshop_id", [""])[0]
             result = create_install_job(kind, workshop_id)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/catalog/install":
+            source = fields.get("source", [""])[0]
+            kind = fields.get("kind", [""])[0]
+            item_id = fields.get("id", [""])[0]
+            title = fields.get("title", [""])[0][:180]
+            url = fields.get("url", [""])[0][:300]
+            result = create_catalog_install_job(source, kind, item_id, title, url)
             self.send_json(200 if result["ok"] else 400, result)
             return
         if self.path == "/api/addon/state":

@@ -1,1 +1,1 @@
-l4d2web ALL=(root) NOPASSWD: /usr/bin/systemctl restart l4d2, /usr/bin/systemctl restart l4d2_2, /usr/local/bin/l4d2-webctl set-default-map *, /usr/local/bin/l4d2-webctl install-workshop *, /usr/local/bin/l4d2-webctl set-addon-state *
+l4d2web ALL=(root) NOPASSWD: /usr/bin/systemctl restart l4d2, /usr/bin/systemctl restart l4d2_2, /usr/local/bin/l4d2-webctl set-default-map *, /usr/local/bin/l4d2-webctl install-workshop *, /usr/local/bin/l4d2-webctl install-gamemaps-map *, /usr/local/bin/l4d2-webctl set-addon-state *
