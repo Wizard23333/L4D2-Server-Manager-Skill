@@ -87,7 +87,7 @@ $l4d2-manager inspect addons, maps, and workshop cache usage, then suggest clean
 - **Manual VPK extraction**: Recommended workflow for extracting VPK content into the game directory when direct addon loading is not enough.
 - **Fast map switching**: RCON commands for changing maps without restarting the server.
 - **Remote operations**: SSH alias usage for repeatable server maintenance.
-- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Workshop map/mod installs, and separating Map Packages from regular Mods.
+- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Workshop / GameMaps map search and installs, and separating Map Packages from regular Mods.
 - **Troubleshooting notes**: Practical fixes for common issues such as KeyValues errors, missing resources, and repeated client downloads.
 - **Secret redaction**: Public docs use placeholders only and do not record real RCON passwords, GSLT values, Steam tokens, or SSH credentials.
 
@@ -123,12 +123,13 @@ Before installing the game server, prepare the network path to Steam. This is es
 
 For browser-based day-to-day operations, deploy the lightweight package under `deploy/l4d2-manager-web/`. This panel is not required for the skill/playbook workflow; SSH, RCON, and the command-line scripts remain the primary complete path.
 
-- **Installer**: `deploy/l4d2-manager-web/install.sh`.
-- **Core files**: `app.py`, `l4d2-webctl`, `l4d2-manager-web.service`, and `l4d2-manager-web.sudoers`.
-- **Features**: Room status, campaign/chapter default-map switching, Workshop map/mod install jobs, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **Installer**: `deploy/l4d2-manager-web/install.sh`, which installs the systemd unit, sudoers whitelist, `l4d2-webctl`, and `vpk_extract.py`.
+- **Core files**: `app.py`, `l4d2-webctl`, `vpk_extract.py`, `l4d2-manager-web.service`, and `l4d2-manager-web.sudoers`.
+- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; the older `/api/workshop/install` remains available for compatibility.
 - **Network access**: The panel listens on `8080/tcp` by default, so both the local firewall such as `ufw` and the cloud security group must allow that port.
 - **Authentication**: Basic Auth credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
-- **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. The panel does not expose arbitrary shell execution.
+- **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. GameMaps installs accept only numeric details ids; the panel does not expose arbitrary URL downloads or shell execution.
 
 ## 4. Live Map Switching With RCON
 

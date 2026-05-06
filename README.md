@@ -84,7 +84,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **手动提取**：推荐的 VPK 资源提取方案，提升服务器稳定性。
 - **快速切图**：详细的 RCON 远程指令集，实现秒级地图切换。
 - **远程管理**：配置 SSH 别名，简化服务器维护操作。
-- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、安装 Workshop 地图/Mod，并区分 Map Packages 与普通 Mod。
+- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、搜索安装 Workshop / GameMaps 三方地图，并区分 Map Packages 与普通 Mod。
 - **故障排查**：针对常见报错（如 KeyValues Error）的修复指南。
 - **安全脱敏**：公开文档只使用占位符，不记录真实 RCON、GSLT、Steam token 或 SSH 凭据。
 
@@ -115,12 +115,13 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 
 如果希望用浏览器做日常管理，可以部署 `deploy/l4d2-manager-web/` 下的轻量面板。它不是使用本仓库 skill/playbook 的必要条件；只用 SSH、RCON 和脚本仍然是完整可用的主流程。
 
-- **安装入口**：`deploy/l4d2-manager-web/install.sh`。
-- **核心文件**：`app.py`、`l4d2-webctl`、`l4d2-manager-web.service`、`l4d2-manager-web.sudoers`。
-- **主要功能**：房间状态查看、默认地图按战役/子地图切换、Workshop 地图/Mod 安装任务、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
+- **安装入口**：`deploy/l4d2-manager-web/install.sh`，会安装 systemd unit、sudoers 白名单、`l4d2-webctl` 和 `vpk_extract.py`。
+- **核心文件**：`app.py`、`l4d2-webctl`、`vpk_extract.py`、`l4d2-manager-web.service`、`l4d2-manager-web.sudoers`。
+- **主要功能**：房间状态查看、默认地图按战役/子地图切换、`Search & Install` 搜索安装 Workshop / GameMaps 地图、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
+- **API 能力**：`/api/catalog/search` 与 `/api/catalog/install` 用于搜索和安装候选项；旧的 `/api/workshop/install` 仍保留兼容。
 - **访问条件**：面板默认监听 `8080/tcp`，需要服务器本机 `ufw` 和云安全组都放行。
 - **登录配置**：Basic Auth 密码保存在服务器 `/etc/l4d2-manager-web.env`，不要把真实密码写入文档、Issue、提交说明或聊天记录。
-- **安全边界**：需要 root 权限的操作只通过 `/usr/local/bin/l4d2-webctl` 和 sudoers 白名单完成，面板不提供任意 shell 输入。
+- **安全边界**：需要 root 权限的操作只通过 `/usr/local/bin/l4d2-webctl` 和 sudoers 白名单完成；GameMaps 只接受数字 details id，不提供任意 URL 或 shell 输入。
 
 ## ⚡ 4. 实时切换地图 (RCON)
 无需重启服务器，在游戏控制台中：

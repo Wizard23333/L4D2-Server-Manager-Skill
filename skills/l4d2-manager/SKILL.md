@@ -307,34 +307,73 @@ ssh myubuntu "sudo du -sh /opt/l4d2/left4dead2/addons /opt/l4d2/left4dead2/maps 
 
 ## 可选附加：L4D2 Web 管理面板
 
-Web 管理面板是部署在服务器上的轻量浏览器界面，适合日常查看房间状态、切换默认地图和管理 VPK。它是本 skill 的附加能力，不是使用 SSH、RCON 和脚本流程的前置条件；不需要网页时，仍可完全按前文命令行流程管理服务器。
+Web 管理面板是部署在服务器上的轻量浏览器界面，适合日常查看房间状态、切换默认地图、搜索安装三方地图和管理 VPK。它是本 skill 的可选附加能力，不是使用 SSH、RCON 和脚本流程的前置条件；不需要网页时，仍可完全按前文命令行流程管理服务器。
 
 部署包位于仓库的 `deploy/l4d2-manager-web/`，核心文件包括：
 - `app.py`：Web/API 服务，默认监听 `8080/tcp`。
 - `l4d2-webctl`：受限 root helper，只暴露经过校验的管理子命令。
+- `vpk_extract.py`：地图类 VPK 的受限提取工具，只提取允许的游戏资源目录。
 - `l4d2-manager-web.service`：systemd unit，用于常驻运行 Web 服务。
 - `l4d2-manager-web.sudoers`：sudoers 白名单，只允许 Web 用户调用指定 helper 和重启指定房间服务。
 - `install.sh`：把上述文件安装到服务器对应位置的部署入口。
 
 当前面板提供的功能边界：
 - 查看 Room 1 / Room 2 状态、端口监听和默认地图。
+- 重启指定房间。
 - 按“战役 -> 子地图”二级选择默认地图，并可选择只保存或保存后重启房间。
-- 安装 Workshop 地图或 Mod，并在页面查看后台任务状态。
+- `Search & Install` 支持按名称搜索三方地图，返回 Workshop / GameMaps 候选；也保留手动输入 Workshop ID 的安装入口。
+- Workshop 安装使用 `install-workshop <map|mod> <workshop_id>`；GameMaps 只允许 `install-gamemaps-map <numeric_id>`，不支持任意 URL 下载。
+- 安装任务以后台 job 展示排队、运行、成功或失败信息；地图安装完成后不自动重启房间。
 - 区分 Map Packages 与 Mod Management，避免把含地图的 VPK 当作普通 Mod 管理。
 - 启用/禁用已有 `.vpk`，仅在 `addons/` 与 `addons_disabled/` 之间移动文件，不提供删除和任意 shell 输入。
 - 地图列表会识别 loose `.bsp`，也会索引启用 VPK 内的 `maps/*.bsp` 与 `missions/*.txt`，并按战役分组展示。
+- GameMaps 可能被 Cloudflare 阻断，页面应显示失败 job；`Run To The Hills` 已验证可通过 Workshop `2232584588` 安装，章节地图为 `rh_map01` 到 `rh_map05`。
+
+部署步骤：
+```bash
+# 本地仓库中执行，将部署包同步到服务器临时目录
+ssh myubuntu "mkdir -p /tmp/l4d2-manager-web"
+scp deploy/l4d2-manager-web/* myubuntu:/tmp/l4d2-manager-web/
+
+# 服务器上安装/更新 Web 面板
+ssh myubuntu "cd /tmp/l4d2-manager-web && sudo bash install.sh"
+```
+
+安装脚本会：
+- 创建或复用系统用户 `l4d2web`。
+- 安装 Web 程序到 `/opt/l4d2-manager-web/`。
+- 安装 helper 到 `/usr/local/bin/l4d2-webctl`。
+- 安装 systemd unit 到 `/etc/systemd/system/l4d2-manager-web.service`。
+- 安装 sudoers 白名单到 `/etc/sudoers.d/l4d2-manager-web`。
+- 首次部署时生成 `/etc/l4d2-manager-web.env`，后续部署保留已有登录配置。
+- `daemon-reload` 后启用并重启 `l4d2-manager-web.service`。
 
 安全注意事项：
 - 面板使用 Basic Auth，登录配置保存在服务器 `/etc/l4d2-manager-web.env`；文档、Issue、提交说明和聊天记录中不要记录真实密码。
 - 访问面板需要同时放行服务器本机防火墙和云安全组的 `8080/tcp`。
 - 所有需要 root 权限的操作必须经过 `/usr/local/bin/l4d2-webctl`，不要让 Web 服务执行任意 shell。
+- sudoers 只白名单以下能力：重启 `l4d2` / `l4d2_2`、`set-default-map`、`install-workshop`、`install-gamemaps-map`、`set-addon-state`。
+- GameMaps 入口只接受数字 details id，并从 `https://www.gamemaps.com/details/<id>` 派生下载；不要增加任意 URL 输入框。
 - 不要把 RCON 密码、GSLT、Steam token、SSH 私钥、代理订阅或 Basic Auth 密码写入公开文档。
 
 常用检查命令：
 ```bash
 sudo systemctl status l4d2-manager-web --no-pager
 sudo systemctl restart l4d2-manager-web
+sudo ss -H -ltnp 'sport = :8080'
 sudo grep '^L4D2_WEB_PASSWORD=' /etc/l4d2-manager-web.env
+```
+
+部署后验证：
+```bash
+sudo python3 /tmp/l4d2-manager-web/verify_api.py
+sudo python3 /tmp/l4d2-manager-web/verify_home.py
+sudo python3 /tmp/l4d2-manager-web/verify_phase3.py
+```
+
+安装地图前后确认不会自动重启房间：
+```bash
+sudo systemctl show l4d2 l4d2_2 -p ExecMainStartTimestamp --no-pager
 ```
 
 ---
