@@ -1252,6 +1252,13 @@ def render_page():
       noticeEl.textContent = `${(data.results || []).length} result(s)`;
     }
 
+    function runCatalogSearch(button) {
+      if (button) button.disabled = true;
+      return searchCatalog().finally(() => {
+        if (button) button.disabled = false;
+      });
+    }
+
     async function installCatalog(source, kind, id, title, url) {
       noticeEl.textContent = "Queueing install...";
       const res = await fetch("/api/catalog/install", {
@@ -1277,14 +1284,14 @@ def render_page():
     }
 
     document.querySelector("#refresh").addEventListener("click", loadState);
+    const catalogSearchButton = document.querySelector("#catalog-search");
     document.querySelector("#catalog-search").addEventListener("click", event => {
-      event.target.disabled = true;
-      searchCatalog().finally(() => event.target.disabled = false);
+      runCatalogSearch(event.target);
     });
     document.querySelector("#catalog-query").addEventListener("keydown", event => {
       if (event.key === "Enter") {
         event.preventDefault();
-        searchCatalog();
+        runCatalogSearch(catalogSearchButton);
       }
     });
     document.querySelector("#install-workshop").addEventListener("click", event => {
