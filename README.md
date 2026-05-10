@@ -4,6 +4,8 @@
 
 本指南记录了从零开始配置 L4D2 (Left 4 Dead 2) 专用服务器的全过程，包括环境优化、网络加速、基础安装以及后续的自动化地图管理方案。
 
+如果你正在维护一台 L4D2 服务器，这个仓库可以同时作为 AI Agent skill、人工运维 playbook，以及一个可选的浏览器管理面板部署包来使用。它重点解决多房间状态检查、Workshop / VPK 地图安装、默认地图切换、RCON 操作、日志排障和敏感信息脱敏这些高频问题。
+
 ---
 
 ## 项目定位
@@ -12,7 +14,7 @@
 
 仓库内提供了可直接安装或引用的 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)，但核心内容并不绑定某一个工具。你也可以把这份文档作为 Codex、Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
 
-仓库同时包含一个可选的 Web 管理面板部署包，适合想用浏览器完成日常房间、地图和 VPK 管理的人；不需要 Web 面板时，仍可继续只使用 skill + SSH/RCON 流程。
+仓库同时包含一个可选的 Web 管理面板部署包，适合想用浏览器完成日常房间、三方地图、VPK 和默认地图管理的人；不需要 Web 面板时，仍可继续只使用 skill + SSH/RCON 流程。
 
 适合：
 - 已经有一台 Linux L4D2 专用服务器，希望用 AI IDE、Agent 或普通 SSH 流程辅助管理。
@@ -84,7 +86,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **手动提取**：推荐的 VPK 资源提取方案，提升服务器稳定性。
 - **快速切图**：详细的 RCON 远程指令集，实现秒级地图切换。
 - **远程管理**：配置 SSH 别名，简化服务器维护操作。
-- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、搜索安装 Workshop / GameMaps 三方地图，并区分 Map Packages 与普通 Mod。
+- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、Steam Workshop 优先搜索安装三方地图、后台显示下载进度，并区分 Map Packages 与普通 Mod。
 - **故障排查**：针对常见报错（如 KeyValues Error）的修复指南。
 - **安全脱敏**：公开文档只使用占位符，不记录真实 RCON、GSLT、Steam token 或 SSH 凭据。
 
@@ -109,7 +111,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **自动安装**：使用 `l4d2-add-map` 脚本或 Steam API 下载。
 - **手动提取**：使用 `vpk_extract.py` 将 VPK 内容提取到游戏目录（推荐）。
 - **默认地图**：修改 `start_l4d2.sh` 中的 `+map` 参数。
-- **Web 面板分组**：可选 Web 面板会识别 loose `.bsp` 和启用 VPK 内的地图/mission，并按“战役 -> 子地图”分组展示。
+- **Web 面板分组**：可选 Web 面板会识别 loose `.bsp` 和启用 VPK 内的地图/mission，并按“战役 -> 子地图”分组展示；mission parser 支持非固定顶层 key，能把 Glubtastic 4/5 这类地图归入对应战役而不是散进 Other。
 
 ## 🌐 可选 Web 管理面板
 
@@ -117,8 +119,10 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 
 - **安装入口**：`deploy/l4d2-manager-web/install.sh`，会安装 systemd unit、sudoers 白名单、`l4d2-webctl` 和 `vpk_extract.py`。
 - **核心文件**：`app.py`、`l4d2-webctl`、`vpk_extract.py`、`l4d2-manager-web.service`、`l4d2-manager-web.sudoers`。
-- **主要功能**：房间状态查看、默认地图按战役/子地图切换、`Search & Install` 搜索安装 Workshop / GameMaps 地图、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
-- **API 能力**：`/api/catalog/search` 与 `/api/catalog/install` 用于搜索和安装候选项；旧的 `/api/workshop/install` 仍保留兼容。
+- **主要功能**：房间状态查看、默认地图按战役/子地图切换、`Search & Install` 搜索安装 Workshop / GameMaps 地图、后台任务进度条、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
+- **地图包管理**：Map Packages 支持 `Reinstall`、普通删除和彻底删除；普通删除保留来源记录，后续可以从面板恢复安装。
+- **任务与记录**：安装任务持久化到 `/var/lib/l4d2-manager-web/jobs/`，地图包来源记录保存在 `/var/lib/l4d2-manager-web/packages.json`，页面刷新后仍能查看进度和重装入口。
+- **API 能力**：`/api/catalog/search` 与 `/api/catalog/install` 用于搜索和安装候选项；`/api/map-package/delete` 和 `/api/map-package/reinstall` 用于地图包管理；旧的 `/api/workshop/install` 仍保留兼容。
 - **访问条件**：面板默认监听 `8080/tcp`，需要服务器本机 `ufw` 和云安全组都放行。
 - **登录配置**：Basic Auth 密码保存在服务器 `/etc/l4d2-manager-web.env`，不要把真实密码写入文档、Issue、提交说明或聊天记录。
 - **安全边界**：需要 root 权限的操作只通过 `/usr/local/bin/l4d2-webctl` 和 sudoers 白名单完成；GameMaps 只接受数字 details id，不提供任意 URL 或 shell 输入。

@@ -4,6 +4,8 @@ English | [Simplified Chinese](./README.md)
 
 This guide documents the setup and day-to-day management workflow for a Left 4 Dead 2 dedicated server, including environment preparation, Steam connectivity workarounds, service management, custom map deployment, and RCON-based map switching.
 
+For server owners, this repository can work as an AI agent skill, a human-readable operations playbook, and an optional browser-based management panel deployment package. It focuses on the daily jobs that usually get messy: multi-room health checks, Workshop / VPK map installs, default-map switching, RCON operations, log triage, and safe secret redaction.
+
 ---
 
 ## Project Scope
@@ -12,7 +14,7 @@ This repository provides a server management skill / playbook and an operational
 
 The repository includes [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), which can be installed or referenced directly, but the workflow itself is not tied to a single tool. You can use it as project context for Codex, Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
 
-The repository also includes an optional Web management panel deployment package for people who prefer browser-based room, map, and VPK management. It is an add-on, not a requirement for using the skill plus SSH/RCON workflow.
+The repository also includes an optional Web management panel deployment package for people who prefer browser-based room, third-party map, VPK, and default-map management. It is an add-on, not a requirement for using the skill plus SSH/RCON workflow.
 
 Good fit for:
 
@@ -87,7 +89,7 @@ $l4d2-manager inspect addons, maps, and workshop cache usage, then suggest clean
 - **Manual VPK extraction**: Recommended workflow for extracting VPK content into the game directory when direct addon loading is not enough.
 - **Fast map switching**: RCON commands for changing maps without restarting the server.
 - **Remote operations**: SSH alias usage for repeatable server maintenance.
-- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Workshop / GameMaps map search and installs, and separating Map Packages from regular Mods.
+- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Steam-first Workshop map search, background install progress, and separating Map Packages from regular Mods.
 - **Troubleshooting notes**: Practical fixes for common issues such as KeyValues errors, missing resources, and repeated client downloads.
 - **Secret redaction**: Public docs use placeholders only and do not record real RCON passwords, GSLT values, Steam tokens, or SSH credentials.
 
@@ -117,7 +119,7 @@ Before installing the game server, prepare the network path to Steam. This is es
 - **Automated install**: Use the `l4d2-add-map` script or the Steam Web API download flow.
 - **Manual extraction**: Use `vpk_extract.py` to extract VPK contents into the game directory. This is recommended for stability when maps include missions, models, materials, and other loose assets.
 - **Default map**: Change the `+map` parameter in `start_l4d2.sh` or `start_l4d2_2.sh`.
-- **Web panel grouping**: The optional Web panel indexes loose `.bsp` files plus enabled VPK map/mission entries, then groups them by campaign and chapter.
+- **Web panel grouping**: The optional Web panel indexes loose `.bsp` files plus enabled VPK map/mission entries, then groups them by campaign and chapter. Its mission parser supports custom top-level keys, so packages such as Glubtastic 4/5 can be grouped as campaigns instead of falling into Other.
 
 ## Optional Web Management Panel
 
@@ -125,8 +127,10 @@ For browser-based day-to-day operations, deploy the lightweight package under `d
 
 - **Installer**: `deploy/l4d2-manager-web/install.sh`, which installs the systemd unit, sudoers whitelist, `l4d2-webctl`, and `vpk_extract.py`.
 - **Core files**: `app.py`, `l4d2-webctl`, `vpk_extract.py`, `l4d2-manager-web.service`, and `l4d2-manager-web.sudoers`.
-- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
-- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; the older `/api/workshop/install` remains available for compatibility.
+- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, background install progress, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **Map package management**: Map Packages support `Reinstall`, Soft Delete, and Purge Delete. Soft Delete removes local files while keeping the source record for later reinstall.
+- **Jobs and records**: Install jobs persist under `/var/lib/l4d2-manager-web/jobs/`, and package source records live in `/var/lib/l4d2-manager-web/packages.json`, so refreshes can still show progress and reinstall entries.
+- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; `/api/map-package/delete` and `/api/map-package/reinstall` manage installed map packages; the older `/api/workshop/install` remains available for compatibility.
 - **Network access**: The panel listens on `8080/tcp` by default, so both the local firewall such as `ufw` and the cloud security group must allow that port.
 - **Authentication**: Basic Auth credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
 - **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. GameMaps installs accept only numeric details ids; the panel does not expose arbitrary URL downloads or shell execution.

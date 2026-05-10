@@ -7,6 +7,7 @@ if [[ "$(id -u)" != "0" ]]; then
 fi
 
 APP_DIR="/opt/l4d2-manager-web"
+STATE_DIR="/var/lib/l4d2-manager-web"
 ENV_FILE="/etc/l4d2-manager-web.env"
 SERVICE_FILE="/etc/systemd/system/l4d2-manager-web.service"
 SUDOERS_FILE="/etc/sudoers.d/l4d2-manager-web"
@@ -16,6 +17,8 @@ if ! id l4d2web >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 "$APP_DIR"
+install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR"
+install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/jobs"
 install -m 0755 app.py "$APP_DIR/app.py"
 install -m 0755 l4d2-webctl /usr/local/bin/l4d2-webctl
 install -m 0644 vpk_extract.py "$APP_DIR/vpk_extract.py"

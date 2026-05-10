@@ -28,11 +28,19 @@ WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 GAMEMAPS_ID_RE = re.compile(r"^[0-9]{1,12}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
 GAMEMAPS_HOSTS = {"www.gamemaps.com", "gamemaps.com"}
+ALLOWED_EXTRACT_ROOTS = {"maps", "missions", "materials", "models", "sound", "scripts"}
+INLINE_ARCHIVE = 0x7FFF
 
 
 def fail(message):
     print(message, file=sys.stderr)
     raise SystemExit(1)
+
+
+def emit(event, **fields):
+    payload = {"event": event}
+    payload.update(fields)
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def read_null_string(handle):
@@ -86,10 +94,83 @@ def vpk_maps(vpk_path):
     return maps
 
 
+def vpk_entries(vpk_path):
+    entries = []
+    try:
+        with open(vpk_path, "rb") as handle:
+            header = handle.read(8)
+            if len(header) != 8:
+                return entries
+            signature, version = struct.unpack("<II", header)
+            if signature != 0x55AA1234:
+                return entries
+            tree_size_data = handle.read(4)
+            if len(tree_size_data) != 4:
+                return entries
+            if version == 2:
+                handle.read(16)
+            header_size = 12 if version == 1 else 28
+            handle.seek(header_size)
+            while True:
+                extension = read_null_string(handle)
+                if not extension:
+                    break
+                while True:
+                    path = read_null_string(handle)
+                    if not path:
+                        break
+                    while True:
+                        filename = read_null_string(handle)
+                        if not filename:
+                            break
+                        entry_data = handle.read(18)
+                        if len(entry_data) != 18:
+                            return entries
+                        _crc, preload_bytes, archive_index, _entry_offset, entry_size, _term = struct.unpack("<IHHIIH", entry_data)
+                        handle.read(preload_bytes)
+                        path_name = "" if path in (" ", ".") else path
+                        entry_name = f"{path_name}/{filename}.{extension}" if path_name else f"{filename}.{extension}"
+                        entries.append({
+                            "name": entry_name.replace("\\", "/"),
+                            "archive_index": archive_index,
+                            "size": preload_bytes + entry_size,
+                        })
+    except OSError:
+        return []
+    return entries
+
+
+def safe_extracted_path(entry_name):
+    relative = Path(entry_name.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    if not relative.parts or relative.parts[0].lower() not in ALLOWED_EXTRACT_ROOTS:
+        return None
+    target = (GAME_DIR / relative).resolve()
+    try:
+        target.relative_to(GAME_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
 def available_maps():
     maps = {path.stem for path in MAPS_DIR.glob("*.bsp")}
     for vpk in ADDONS_DIR.glob("*.vpk"):
         maps.update(vpk_maps(vpk))
+    return maps
+
+
+def current_default_maps():
+    maps = set()
+    for script in ROOMS.values():
+        try:
+            text = script.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"(?:^|\s)\+map\s+(\S+)", text)
+        if match:
+            maps.add(match.group(1).lower())
     return maps
 
 
@@ -153,17 +234,34 @@ def download_file(url, destination, allowed_hosts=None):
             host = urllib.parse.urlparse(final_url).netloc.lower()
             if host not in allowed_hosts:
                 fail(f"download redirected to unsupported host: {host}")
+        total = int(response.headers.get("Content-Length") or 0)
+        downloaded = 0
+        last_emit = 0
+        emit("progress", stage="downloading", downloaded=downloaded, total=total, message="Download started")
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             handle.write(chunk)
+            downloaded += len(chunk)
+            now = time.monotonic()
+            if now - last_emit >= 0.5 or (total and downloaded >= total):
+                emit(
+                    "progress",
+                    stage="downloading",
+                    downloaded=downloaded,
+                    total=total,
+                    message="Downloading",
+                )
+                last_emit = now
     tmp.replace(destination)
+    emit("progress", stage="downloaded", downloaded=downloaded, total=total, message="Download finished")
 
 
 def extract_map_package(destination):
     if not VPK_EXTRACTOR.is_file():
         fail(f"VPK extractor missing: {VPK_EXTRACTOR}")
+    emit("stage", stage="extracting", message=f"Extracting {destination.name}")
     result = subprocess.run(
         ["/usr/bin/python3", str(VPK_EXTRACTOR), str(destination), str(GAME_DIR)],
         check=False,
@@ -177,6 +275,7 @@ def extract_map_package(destination):
         path = GAME_DIR / name
         if path.exists():
             chown_steam(path)
+    emit("stage", stage="extracted", message=f"Extracted {destination.name}")
 
 
 def install_workshop(kind, workshop_id):
@@ -191,7 +290,7 @@ def install_workshop(kind, workshop_id):
     title = safe_title(details.get("title", "workshop_item"))
     destination = ADDONS_DIR / f"{kind}_{workshop_id}_{title}.vpk"
     download_target = DOWNLOAD_DIR / f"{workshop_id}.vpk"
-    print(f"downloading {details.get('title', workshop_id)}")
+    emit("stage", stage="preparing", message=f"Downloading {details.get('title', workshop_id)}")
     download_file(details["file_url"], download_target)
     shutil.copy2(download_target, destination)
     chown_steam(destination)
@@ -199,7 +298,7 @@ def install_workshop(kind, workshop_id):
     if kind == "map":
         extract_map_package(destination)
 
-    print(f"installed {destination.name}")
+    emit("message", message=f"installed {destination.name}")
 
 
 def fetch_gamemaps_details(gamemaps_id):
@@ -259,7 +358,7 @@ def install_gamemaps_map(gamemaps_id):
     errors = []
     for url in details["links"]:
         try:
-            print(f"downloading {details['title']} from {url}")
+            emit("stage", stage="preparing", message=f"Downloading {details['title']} from {url}")
             download_file(url, download_target, allowed_hosts=GAMEMAPS_HOSTS)
             assert_vpk_file(download_target)
             break
@@ -272,7 +371,7 @@ def install_gamemaps_map(gamemaps_id):
     shutil.copy2(download_target, destination)
     chown_steam(destination)
     extract_map_package(destination)
-    print(f"installed {destination.name}")
+    emit("message", message=f"installed {destination.name}")
 
 
 def set_addon_state(filename, state):
@@ -296,6 +395,60 @@ def set_addon_state(filename, state):
     print(f"{filename} {state}")
 
 
+def find_addon_file(filename):
+    for root in (ADDONS_DIR, DISABLED_ADDONS_DIR):
+        candidate = root / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def other_enabled_entry_names(target_path):
+    names = set()
+    for vpk in ADDONS_DIR.glob("*.vpk"):
+        if vpk.resolve() == target_path.resolve():
+            continue
+        for entry in vpk_entries(vpk):
+            names.add(entry["name"].lower())
+    return names
+
+
+def delete_map_package(filename, mode):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        fail("invalid map package filename")
+    if mode not in {"soft", "purge"}:
+        fail("delete mode must be soft or purge")
+    package = find_addon_file(filename)
+    if not package:
+        print(f"{filename} already absent")
+        return
+    maps = vpk_maps(package)
+    defaults = current_default_maps()
+    if defaults & {name.lower() for name in maps}:
+        fail("package contains a current default map")
+
+    entries = vpk_entries(package)
+    shared_entries = other_enabled_entry_names(package)
+    deleted_loose = 0
+    for entry in entries:
+        if entry["archive_index"] != INLINE_ARCHIVE:
+            continue
+        if entry["name"].lower() in shared_entries:
+            continue
+        target = safe_extracted_path(entry["name"])
+        if not target or not target.is_file():
+            continue
+        try:
+            if target.stat().st_size != entry["size"]:
+                continue
+            target.unlink()
+            deleted_loose += 1
+        except OSError:
+            continue
+    package.unlink()
+    print(f"{filename} {mode} deleted; removed {deleted_loose} loose files")
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "set-default-map":
         if len(sys.argv) != 4:
@@ -317,7 +470,12 @@ def main():
             fail("usage: l4d2-webctl set-addon-state <filename> <enabled|disabled>")
         set_addon_state(sys.argv[2], sys.argv[3])
         return
-    fail("usage: l4d2-webctl <set-default-map|install-workshop|install-gamemaps-map|set-addon-state> ...")
+    if len(sys.argv) >= 2 and sys.argv[1] == "delete-map-package":
+        if len(sys.argv) != 4:
+            fail("usage: l4d2-webctl delete-map-package <filename> <soft|purge>")
+        delete_map_package(sys.argv[2], sys.argv[3])
+        return
+    fail("usage: l4d2-webctl <set-default-map|install-workshop|install-gamemaps-map|set-addon-state|delete-map-package> ...")
 
 
 if __name__ == "__main__":

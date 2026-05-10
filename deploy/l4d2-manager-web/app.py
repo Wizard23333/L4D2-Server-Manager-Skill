@@ -36,17 +36,21 @@ MAPS_DIR = Path("/opt/l4d2/left4dead2/maps")
 MISSIONS_DIR = Path("/opt/l4d2/left4dead2/missions")
 ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons")
 DISABLED_ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons_disabled")
+JOBS_DIR = Path(os.environ.get("L4D2_WEB_JOBS_DIR", "/var/lib/l4d2-manager-web/jobs"))
+PACKAGES_FILE = Path(os.environ.get("L4D2_WEB_PACKAGES_FILE", "/var/lib/l4d2-manager-web/packages.json"))
 ADMIN_USER = os.environ.get("L4D2_WEB_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("L4D2_WEB_PASSWORD", "")
+STEAM_WEB_API_KEY = os.environ.get("STEAM_WEB_API_KEY", "")
 AUTH_REALM = "L4D2 Manager"
 WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
-CATALOG_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.,:()'!&+-]{1,80}$")
+CATALOG_FORBIDDEN_CHARS = set('/\\<>[]{}$;|`')
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 EXCLUDED_CAMPAIGN_MAPS = {"c5m1_waterfront_sndscape"}
 STEAM_DETAILS_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
 STEAM_QUERY_URL = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
+STEAM_BROWSE_URL = "https://steamcommunity.com/workshop/browse/"
 STEAM_WORKSHOP_URL = "https://steamcommunity.com/sharedfiles/filedetails/?id={id}"
 GAMEMAPS_DETAILS_URL = "https://www.gamemaps.com/details/{id}"
 
@@ -74,6 +78,92 @@ KNOWN_CATALOG_ITEMS = [
         "installable": True,
         "reason": "",
         "aliases": ["run to the hills", "runtothehills", "run hills"],
+    },
+    {
+        "source": "workshop",
+        "id": "3583374422",
+        "install_ids": ["3583374422", "3583375624", "3583381403", "3583382507"],
+        "title": "广西灵山 V2.9 / Lingshan-Guangxi V2.9",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="3583374422"),
+        "size": "4 packages",
+        "summary": "Multi-part campaign package. Installs the main Workshop item plus Pack-2, Pack-3, and Pack-4.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["广西灵山", "灵山", "lingshan", "guangxi lingshan", "lingshan-guangxi"],
+    },
+    {
+        "source": "gamemaps",
+        "id": "34721",
+        "title": "Lingshan-Guangxi / 广西灵山",
+        "kind": "map",
+        "url": GAMEMAPS_DETAILS_URL.format(id="34721"),
+        "size": "",
+        "summary": "GameMaps mirror. Steam Workshop is preferred for this multi-part campaign.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["广西灵山", "灵山", "lingshan", "guangxi lingshan", "lingshan-guangxi"],
+    },
+    {
+        "source": "workshop",
+        "id": "767999000",
+        "install_ids": ["767999000", "170360252", "169801737", "1127584577"],
+        "title": "Yama",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="767999000"),
+        "size": "4 packages",
+        "summary": "Multi-part campaign package: Yama part 1, part 2, part 3, and Yama Finale fix.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["yama", "l4d_yama", "yama japan"],
+    },
+    {
+        "source": "workshop",
+        "id": "2396847377",
+        "title": "广州增城 （Zengcheng）Lv7.3",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="2396847377"),
+        "size": "",
+        "summary": "5-map Guangzhou Zengcheng campaign.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["广州增城", "增城", "zengcheng", "guangzhou zengcheng", "gzzc"],
+    },
+    {
+        "source": "workshop",
+        "id": "3526529688",
+        "title": "地心引力 / The Gravitation",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="3526529688"),
+        "size": "411.3 MB",
+        "summary": "Campaign package. The author notes that servers only need to upload part 1.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["地心引力", "the gravitation", "gravitation", "dxyl"],
+    },
+    {
+        "source": "workshop",
+        "id": "2459037122",
+        "title": "Glubtastic 4",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="2459037122"),
+        "size": "",
+        "summary": "Installed map package candidate.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["glubtastic", "glubtastic 4"],
+    },
+    {
+        "source": "workshop",
+        "id": "3366491323",
+        "title": "Glubtastic 5",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="3366491323"),
+        "size": "",
+        "summary": "Installed map package candidate.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["glubtastic", "glubtastic 5"],
     },
 ]
 
@@ -307,14 +397,15 @@ def available_maps():
                     parsed = parse_keyvalues(mission_data.decode("utf-8", errors="replace"))
                 except Exception:
                     continue
-                mission = parsed.get("mission", {})
-                modes = mission.get("modes") if isinstance(mission, dict) else {}
-                coop = modes.get("coop") if isinstance(modes, dict) else {}
+                mission = mission_root(parsed) or {}
+                modes = dict_get_ci(mission, "modes") if isinstance(mission, dict) else {}
+                coop = dict_get_ci(modes, "coop") if isinstance(modes, dict) else {}
                 if not isinstance(coop, dict):
                     continue
                 for chapter in coop.values():
-                    if isinstance(chapter, dict) and chapter.get("Map"):
-                        maps.add(chapter["Map"])
+                    map_name = dict_get_ci(chapter, "Map") if isinstance(chapter, dict) else None
+                    if map_name:
+                        maps.add(str(map_name).lower().replace(" ", "_"))
     return sorted(maps)
 
 
@@ -389,31 +480,67 @@ def campaign_id(title, fallback):
     return value or fallback
 
 
+def natural_map_key(value):
+    parts = re.split(r"(\d+)", value)
+    return [int(part) if part.isdigit() else part.lower() for part in parts]
+
+
+def dict_get_ci(data, key):
+    if not isinstance(data, dict):
+        return None
+    key_lower = key.lower()
+    for item_key, value in data.items():
+        if isinstance(item_key, str) and item_key.lower() == key_lower:
+            return value
+    return None
+
+
+def mission_root(parsed):
+    mission = dict_get_ci(parsed, "mission")
+    if isinstance(mission, dict):
+        return mission
+    if not isinstance(parsed, dict):
+        return None
+    for value in parsed.values():
+        if not isinstance(value, dict):
+            continue
+        modes = dict_get_ci(value, "modes")
+        coop = dict_get_ci(modes, "coop") if isinstance(modes, dict) else None
+        if isinstance(coop, dict):
+            return value
+    return None
+
+
 def campaign_from_mission_text(text, fallback, installed_maps):
     try:
         parsed = parse_keyvalues(text)
     except Exception:
         return None
-    mission = parsed.get("mission")
+    mission = mission_root(parsed)
     if not isinstance(mission, dict):
         return None
-    modes = mission.get("modes")
-    coop = modes.get("coop") if isinstance(modes, dict) else None
+    modes = dict_get_ci(mission, "modes")
+    coop = dict_get_ci(modes, "coop") if isinstance(modes, dict) else None
     if not isinstance(coop, dict):
         return None
-    title = mission.get("DisplayTitle") or mission.get("Name") or fallback
+    title = dict_get_ci(mission, "DisplayTitle") or dict_get_ci(mission, "Name") or fallback
+    installed_by_lower = {name.lower(): name for name in installed_maps}
     maps = []
     for chapter_key in sorted(coop, key=lambda value: int(value) if value.isdigit() else 9999):
         entry = coop[chapter_key]
         if not isinstance(entry, dict):
             continue
-        map_name = entry.get("Map")
-        if map_name not in installed_maps:
+        map_name = dict_get_ci(entry, "Map")
+        if not map_name:
             continue
+        canonical_map_name = installed_by_lower.get(str(map_name).lower())
+        if not canonical_map_name:
+            continue
+        display_name = str(dict_get_ci(entry, "DisplayName") or "").strip() or canonical_map_name
         maps.append(
             {
-                "name": map_name,
-                "display_name": entry.get("DisplayName") or map_name,
+                "name": canonical_map_name,
+                "display_name": display_name,
                 "chapter": int(chapter_key) if chapter_key.isdigit() else len(maps) + 1,
             }
         )
@@ -424,6 +551,24 @@ def campaign_from_mission_text(text, fallback, installed_maps):
         "title": title,
         "source": "mission",
         "maps": maps,
+    }
+
+
+def fallback_campaign_from_vpk(item):
+    maps = sorted(set(item.get("maps", [])), key=natural_map_key)
+    if len(maps) < 2:
+        return None
+    package = read_package_registry().get(item["filename"], {})
+    title = package.get("title") or Path(item["filename"]).stem
+    title = re.sub(r"^(map|mod)_\d+_", "", title).replace("_", " ").strip() or Path(item["filename"]).stem
+    return {
+        "id": f"vpk_{campaign_id(title, Path(item['filename']).stem)}",
+        "title": title,
+        "source": "vpk",
+        "maps": [
+            {"name": name, "display_name": name, "chapter": index + 1}
+            for index, name in enumerate(maps)
+        ],
     }
 
 
@@ -447,6 +592,7 @@ def parse_mission_campaigns(installed_maps):
     for item in vpk_inventory():
         if item["state"] != "enabled":
             continue
+        found_campaign = False
         for fallback, entry in item["missions"].items():
             data = read_vpk_entry(entry)
             if not data:
@@ -459,6 +605,11 @@ def parse_mission_campaigns(installed_maps):
             if campaign:
                 campaign["source"] = "vpk"
                 campaigns.append(campaign)
+                found_campaign = True
+        if not found_campaign:
+            campaign = fallback_campaign_from_vpk(item)
+            if campaign:
+                campaigns.append(campaign)
     return campaigns
 
 
@@ -466,6 +617,7 @@ def build_campaigns():
     installed_maps = set(available_maps()) - EXCLUDED_CAMPAIGN_MAPS
     campaigns = []
     assigned = set()
+    assigned_lower = set()
     for campaign in OFFICIAL_CAMPAIGNS:
         maps = [dict(item) for item in campaign["maps"] if item["name"] in installed_maps]
         if maps:
@@ -473,16 +625,18 @@ def build_campaigns():
             copy["maps"] = maps
             campaigns.append(copy)
             assigned.update(item["name"] for item in maps)
+            assigned_lower.update(item["name"].lower() for item in maps)
     for campaign in parse_mission_campaigns(installed_maps):
-        maps = [item for item in campaign["maps"] if item["name"] not in assigned]
+        maps = [item for item in campaign["maps"] if item["name"].lower() not in assigned_lower]
         if maps:
             copy = dict(campaign)
             copy["maps"] = maps
             campaigns.append(copy)
             assigned.update(item["name"] for item in maps)
+            assigned_lower.update(item["name"].lower() for item in maps)
     other_maps = [
         {"name": name, "display_name": name, "chapter": index + 1}
-        for index, name in enumerate(sorted(installed_maps - assigned))
+        for index, name in enumerate(sorted(name for name in installed_maps - assigned if name.lower() not in assigned_lower))
     ]
     if other_maps:
         campaigns.append(
@@ -506,11 +660,17 @@ def find_campaign_for_map(map_name, campaigns=None):
 
 def list_addons():
     addons = []
-    for item in vpk_inventory():
+    inventory = vpk_inventory()
+    packages = sync_package_registry(inventory)
+    seen_packages = set()
+    for item in inventory:
         try:
             modified_at = int(item["path"].stat().st_mtime)
         except OSError:
             modified_at = 0
+        package = packages.get(item["filename"], {})
+        if item["is_map_package"]:
+            seen_packages.add(item["filename"])
         addons.append(
             {
                 "filename": item["filename"],
@@ -519,6 +679,35 @@ def list_addons():
                 "modified_at": modified_at,
                 "kind": "map" if item["is_map_package"] else "mod",
                 "maps": item["maps"],
+                "missions": sorted(item["missions"].keys()),
+                "source": package.get("source", ""),
+                "catalog_id": package.get("id", ""),
+                "title": package.get("title", item["filename"]),
+                "url": package.get("url", ""),
+                "install_ids": package.get("install_ids", []),
+                "package_status": package.get("status", "installed") if item["is_map_package"] else "",
+                "reinstallable": bool(package.get("source") and package.get("id")) if item["is_map_package"] else False,
+            }
+        )
+    for filename, package in packages.items():
+        if filename in seen_packages or package.get("status") != "deleted":
+            continue
+        addons.append(
+            {
+                "filename": filename,
+                "state": "deleted",
+                "size": 0,
+                "modified_at": package.get("deleted_at", 0),
+                "kind": "map",
+                "maps": package.get("maps", []),
+                "missions": package.get("missions", []),
+                "source": package.get("source", ""),
+                "catalog_id": package.get("id", ""),
+                "title": package.get("title", filename),
+                "url": package.get("url", ""),
+                "install_ids": package.get("install_ids", []),
+                "package_status": "deleted",
+                "reinstallable": bool(package.get("source") and package.get("id")),
             }
         )
     return addons
@@ -608,13 +797,200 @@ def set_default_map(room, map_name, restart=False):
 
 
 def list_jobs():
+    load_persisted_jobs()
     with JOBS_LOCK:
         return sorted(JOBS.values(), key=lambda job: job["created_at"], reverse=True)[:20]
 
 
 def update_job(job_id, **fields):
     with JOBS_LOCK:
-        JOBS[job_id].update(fields)
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+        persist_job(job)
+
+
+def ensure_jobs_dir():
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+
+def job_path(job_id):
+    return JOBS_DIR / f"{job_id}.json"
+
+
+def persist_job(job):
+    ensure_jobs_dir()
+    try:
+        tmp = JOBS_DIR / f".{job['id']}.{uuid.uuid4().hex}.tmp"
+        tmp.write_text(json.dumps(job, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(job_path(job["id"]))
+    except OSError:
+        pass
+
+
+def read_job_file(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not data.get("id"):
+        return None
+    return data
+
+
+def load_persisted_jobs():
+    ensure_jobs_dir()
+    try:
+        paths = sorted(JOBS_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:50]
+    except OSError:
+        paths = []
+    loaded = {}
+    for path in paths:
+        job = read_job_file(path)
+        if job:
+            loaded[job["id"]] = job
+    with JOBS_LOCK:
+        for job_id, job in loaded.items():
+            JOBS.setdefault(job_id, job)
+
+
+def recover_interrupted_jobs():
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        interrupted = [
+            job for job in JOBS.values()
+            if job.get("status") in {"queued", "running"}
+        ]
+    for job in interrupted:
+        update_job(
+            job["id"],
+            status="interrupted",
+            stage="interrupted",
+            message="Install was interrupted while the Web service was offline. Re-run the install if it did not finish.",
+            finished_at=int(time.time()),
+        )
+
+
+def read_package_registry():
+    try:
+        data = json.loads(PACKAGES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    packages = data.get("packages", {})
+    return packages if isinstance(packages, dict) else {}
+
+
+def write_package_registry(packages):
+    try:
+        PACKAGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PACKAGES_FILE.with_name(f".{PACKAGES_FILE.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps({"packages": packages}, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(PACKAGES_FILE)
+    except OSError:
+        pass
+
+
+def infer_package_source(filename):
+    match = re.match(r"map_(\d{4,20})_", filename)
+    if match:
+        item_id = match.group(1)
+        return {
+            "source": "workshop",
+            "id": item_id,
+            "url": STEAM_WORKSHOP_URL.format(id=item_id),
+            "install_ids": known_install_ids("workshop", "map", item_id) or [item_id],
+        }
+    match = re.match(r"map_gamemaps_(\d{1,12})_", filename)
+    if match:
+        item_id = match.group(1)
+        return {
+            "source": "gamemaps",
+            "id": item_id,
+            "url": GAMEMAPS_DETAILS_URL.format(id=item_id),
+            "install_ids": [item_id],
+        }
+    for item in KNOWN_CATALOG_ITEMS:
+        if item["kind"] != "map":
+            continue
+        title = normalize_catalog_query(item.get("title", ""))
+        stem = normalize_catalog_query(Path(filename).stem)
+        aliases = [normalize_catalog_query(alias) for alias in item.get("aliases", [])]
+        if title and title in stem or any(alias and alias in stem for alias in aliases):
+            return {
+                "source": item["source"],
+                "id": item["id"],
+                "url": item["url"],
+                "install_ids": item.get("install_ids") or [item["id"]],
+            }
+    return {"source": "", "id": "", "url": "", "install_ids": []}
+
+
+def package_record_from_addon(addon, source_data=None):
+    source_data = source_data or infer_package_source(addon["filename"])
+    return {
+        "filename": addon["filename"],
+        "source": source_data.get("source", ""),
+        "id": str(source_data.get("id", "")),
+        "title": addon.get("title") or addon["filename"],
+        "url": source_data.get("url", ""),
+        "install_ids": [str(value) for value in source_data.get("install_ids", [])],
+        "maps": addon.get("maps", []),
+        "missions": sorted(addon.get("missions", {}).keys()) if isinstance(addon.get("missions"), dict) else addon.get("missions", []),
+        "installed_at": int(time.time()),
+        "status": "installed",
+    }
+
+
+def sync_package_registry(addons=None):
+    packages = read_package_registry()
+    addons = addons if addons is not None else vpk_inventory()
+    changed = False
+    for addon in addons:
+        if not addon.get("is_map_package"):
+            continue
+        record = packages.get(addon["filename"]) or package_record_from_addon(addon)
+        source_data = infer_package_source(addon["filename"])
+        record.update({
+            "filename": addon["filename"],
+            "status": "installed",
+            "maps": addon.get("maps", []),
+            "missions": sorted(addon.get("missions", {}).keys()),
+        })
+        for key in ("source", "id", "url", "install_ids"):
+            if not record.get(key) and source_data.get(key):
+                record[key] = source_data[key]
+        packages[addon["filename"]] = record
+        changed = True
+    if changed:
+        write_package_registry(packages)
+    return packages
+
+
+def register_installed_package(filename, source, kind, item_id, title, url, install_ids):
+    if kind != "map" or not ADDON_RE.match(filename):
+        return
+    addons = vpk_inventory()
+    addon = next((item for item in addons if item["filename"] == filename), None)
+    if not addon:
+        return
+    packages = sync_package_registry(addons)
+    packages[filename] = package_record_from_addon(
+        addon,
+        {
+            "source": source,
+            "id": item_id,
+            "url": url or (STEAM_WORKSHOP_URL.format(id=item_id) if source == "workshop" else GAMEMAPS_DETAILS_URL.format(id=item_id)),
+            "install_ids": install_ids or [item_id],
+        },
+    )
+    packages[filename]["title"] = title or packages[filename]["title"]
+    write_package_registry(packages)
 
 
 def http_json(url, data=None, timeout=12):
@@ -642,7 +1018,7 @@ def format_bytes(value):
     return ""
 
 
-def catalog_item(source, item_id, title, kind, url, size="", summary="", installable=True, reason=""):
+def catalog_item(source, item_id, title, kind, url, size="", summary="", installable=True, reason="", install_ids=None):
     return {
         "source": source,
         "id": str(item_id),
@@ -653,17 +1029,20 @@ def catalog_item(source, item_id, title, kind, url, size="", summary="", install
         "summary": summary,
         "installable": bool(installable),
         "reason": reason,
+        "install_ids": [str(value) for value in (install_ids or [])],
     }
 
 
 def known_catalog_results(query, kind):
-    normalized = re.sub(r"\s+", " ", query.lower()).strip()
+    normalized = normalize_catalog_query(query)
     results = []
     for item in KNOWN_CATALOG_ITEMS:
         if item["kind"] != kind:
             continue
-        haystack = " ".join([item["title"].lower(), *item.get("aliases", [])])
-        if normalized in haystack or any(alias in normalized for alias in item.get("aliases", [])):
+        haystack = normalize_catalog_query(" ".join([item["title"], *item.get("aliases", [])]))
+        aliases = [normalize_catalog_query(alias) for alias in item.get("aliases", [])]
+        ids = {str(item["id"]), *[str(value) for value in item.get("install_ids", [])]}
+        if normalized in ids or normalized in haystack or any(alias and alias in normalized for alias in aliases):
             results.append(catalog_item(
                 item["source"],
                 item["id"],
@@ -674,8 +1053,49 @@ def known_catalog_results(query, kind):
                 item["summary"],
                 item["installable"],
                 item["reason"],
+                item.get("install_ids"),
             ))
     return results
+
+
+def known_catalog_by_id(source, item_id, kind):
+    for item in KNOWN_CATALOG_ITEMS:
+        ids = {str(item["id"]), *[str(value) for value in item.get("install_ids", [])]}
+        if item["kind"] == kind and item["source"] == source and str(item_id) in ids:
+            return item
+    return None
+
+
+def enrich_catalog_result(item):
+    known = known_catalog_by_id(item["source"], item["id"], item["kind"])
+    if not known:
+        return item
+    enriched = dict(item)
+    enriched["title"] = enriched.get("title") or known["title"]
+    enriched["url"] = enriched.get("url") or known["url"]
+    enriched["summary"] = known.get("summary") or enriched.get("summary", "")
+    enriched["size"] = enriched.get("size") or known.get("size", "")
+    enriched["install_ids"] = [str(value) for value in known.get("install_ids", [])]
+    if known.get("reason"):
+        enriched["reason"] = known["reason"]
+    return enriched
+
+
+def normalize_catalog_query(value):
+    return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+def catalog_query_error(query):
+    if len(query) < 3:
+        return "Search query must be at least 3 characters"
+    if len(query) > 80:
+        return "Search query must be 80 characters or fewer"
+    if query[0].isspace():
+        return "Search query must not start with whitespace"
+    for char in query:
+        if char in CATALOG_FORBIDDEN_CHARS or ord(char) < 32 or ord(char) == 127:
+            return "Search query contains unsupported characters"
+    return ""
 
 
 def workshop_detail_result(workshop_id, kind):
@@ -728,26 +1148,59 @@ def workshop_search_results(query, kind):
         "return_tags": "1",
         "return_short_description": "1",
     }
+    if STEAM_WEB_API_KEY:
+        params["key"] = STEAM_WEB_API_KEY
     try:
         url = f"{STEAM_QUERY_URL}?{urllib.parse.urlencode(params)}"
-        payload = http_json(url, timeout=8)
+        payload = http_json(url, timeout=5)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return results
-    for details in payload.get("response", {}).get("publishedfiledetails", [])[:5]:
-        item_id = details.get("publishedfileid")
-        if not item_id:
-            continue
-        results.append(catalog_item(
-            "workshop",
-            item_id,
-            details.get("title") or f"Workshop {item_id}",
-            kind,
-            STEAM_WORKSHOP_URL.format(id=item_id),
-            format_bytes(details.get("file_size")),
-            details.get("short_description") or "",
-            True,
-            "",
-        ))
+        pass
+    else:
+        for details in payload.get("response", {}).get("publishedfiledetails", [])[:5]:
+            item_id = details.get("publishedfileid")
+            if not item_id:
+                continue
+            results.append(catalog_item(
+                "workshop",
+                item_id,
+                details.get("title") or f"Workshop {item_id}",
+                kind,
+                STEAM_WORKSHOP_URL.format(id=item_id),
+                format_bytes(details.get("file_size")),
+                details.get("short_description") or "",
+                True,
+                "",
+            ))
+    results.extend(workshop_public_search_results(query, kind))
+    return results
+
+
+def workshop_public_search_results(query, kind):
+    params = {
+        "appid": "550",
+        "searchtext": query,
+        "browsesort": "textsearch",
+        "section": "readytouseitems",
+        "actualsort": "textsearch",
+        "p": "1",
+    }
+    try:
+        url = f"{STEAM_BROWSE_URL}?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            html_text = response.read(768 * 1024).decode("utf-8", errors="replace")
+    except (OSError, urllib.error.URLError):
+        return []
+    item_ids = []
+    for match in re.finditer(r'(?:publishedfileid["\']?\s*[:=]\s*["\']?|[?&]id=)(\d{4,20})', html_text):
+        item_id = match.group(1)
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+        if len(item_ids) >= 8:
+            break
+    results = []
+    for item_id in item_ids:
+        results.append(workshop_detail_result(item_id, kind))
     return results
 
 
@@ -756,6 +1209,8 @@ def gamemaps_search_results(query, kind):
         return []
     results = []
     if WORKSHOP_ID_RE.match(query):
+        if len(query) > 8:
+            return results
         results.append(catalog_item(
             "gamemaps",
             query,
@@ -774,7 +1229,7 @@ def gamemaps_search_results(query, kind):
     try:
         search_url = "https://www.gamemaps.com/search?" + urllib.parse.urlencode({"q": query})
         request = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             html_text = response.read(256 * 1024).decode("utf-8", errors="replace")
     except (OSError, urllib.error.URLError):
         return results
@@ -795,19 +1250,21 @@ def search_catalog(query, kind):
     query = query.strip()
     if kind not in {"map", "mod"}:
         return {"ok": False, "message": "Kind must be map or mod"}
-    if len(query) < 3:
-        return {"ok": False, "message": "Search query must be at least 3 characters"}
-    if not CATALOG_QUERY_RE.match(query) and not WORKSHOP_ID_RE.match(query):
-        return {"ok": False, "message": "Search query contains unsupported characters"}
+    error = catalog_query_error(query)
+    if error and not WORKSHOP_ID_RE.match(query):
+        return {"ok": False, "message": error}
     results = []
-    results.extend(known_catalog_results(query, kind))
-    if len(results) >= 2 and not WORKSHOP_ID_RE.match(query):
-        return {"ok": True, "query": query, "kind": kind, "results": results[:10]}
+    known_results = known_catalog_results(query, kind)
+    if known_results and not WORKSHOP_ID_RE.match(query) and not STEAM_WEB_API_KEY:
+        return {"ok": True, "query": query, "kind": kind, "results": known_results[:10]}
     results.extend(workshop_search_results(query, kind))
     results.extend(gamemaps_search_results(query, kind))
+    if not WORKSHOP_ID_RE.match(query):
+        results.extend(known_results)
     deduped = []
     seen = set()
     for item in results:
+        item = enrich_catalog_result(item)
         key = (item["source"], item["id"])
         if key in seen:
             continue
@@ -817,28 +1274,180 @@ def search_catalog(query, kind):
 
 
 def install_catalog_job(job_id, source, kind, item_id):
-    update_job(job_id, status="running", message="Installing...")
+    install_catalog_bundle_job(job_id, source, kind, [item_id])
+
+
+def install_command(source, kind, item_id):
     if source == "workshop":
-        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-workshop", kind, item_id]
-    elif source == "gamemaps" and kind == "map":
-        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-gamemaps-map", item_id]
-    else:
-        update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
-        return
-    result = run_cmd(command, timeout=1800)
-    if result["ok"]:
-        message = result["stdout"] or result["stderr"] or "Install finished"
-    else:
-        message = "\n".join(part for part in (result["stdout"], result["stderr"]) if part) or "Install failed"
+        return ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-workshop", kind, item_id]
+    if source == "gamemaps" and kind == "map":
+        return ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-gamemaps-map", item_id]
+    return None
+
+
+def run_install_command(job_id, command, index, total_items, item_id):
     update_job(
         job_id,
-        status="succeeded" if result["ok"] else "failed",
-        message=message[-2000:],
+        status="running",
+        stage="starting",
+        current_item=item_id,
+        items_done=index - 1,
+        items_total=total_items,
+        progress=int(((index - 1) / total_items) * 100),
+        downloaded_bytes=0,
+        total_bytes=0,
+        message=f"Installing item {index}/{total_items}: {item_id}",
+    )
+    lines = []
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
+
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            lines.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                update_job(job_id, message=line[-2000:])
+                continue
+            if event.get("event") == "progress":
+                downloaded = int(event.get("downloaded") or 0)
+                total = int(event.get("total") or 0)
+                item_fraction = downloaded / total if total > 0 else 0
+                update_job(
+                    job_id,
+                    stage=event.get("stage") or "downloading",
+                    downloaded_bytes=downloaded,
+                    total_bytes=total,
+                    progress=min(99, int(((index - 1 + item_fraction) / total_items) * 100)),
+                    message=event.get("message") or f"Downloading item {index}/{total_items}",
+                )
+            elif event.get("event") == "stage":
+                progress = int(((index - 1) / total_items) * 100)
+                update_job(
+                    job_id,
+                    stage=event.get("stage") or "",
+                    progress=progress,
+                    message=event.get("message") or "",
+                )
+            elif event.get("event") == "message":
+                update_job(job_id, message=event.get("message") or "")
+        try:
+            stderr = process.stderr.read() if process.stderr else ""
+            code = process.wait(timeout=1800)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stderr = process.stderr.read() if process.stderr else ""
+            return {"ok": False, "message": "Install command timed out\n" + stderr}
+    except Exception as exc:
+        process.kill()
+        return {"ok": False, "message": str(exc)}
+
+    messages = []
+    installed_filename = ""
+    for line in lines[-12:]:
+        try:
+            event = json.loads(line)
+            if event.get("event") == "progress" and event.get("stage") != "downloaded":
+                continue
+            text = event.get("message")
+            if text:
+                messages.append(text)
+                match = re.search(r"installed\s+([A-Za-z0-9_. -]+\.vpk)", text)
+                if match:
+                    installed_filename = match.group(1)
+        except json.JSONDecodeError:
+            messages.append(line)
+            match = re.search(r"installed\s+([A-Za-z0-9_. -]+\.vpk)", line)
+            if match:
+                installed_filename = match.group(1)
+    if stderr:
+        messages.append(stderr.strip())
+    return {"ok": code == 0, "message": "\n".join(part for part in messages if part) or "Install finished", "filename": installed_filename}
+
+
+def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="", catalog_id=""):
+    total_items = len(item_ids)
+    if total_items < 1:
+        update_job(job_id, status="failed", message="No install items", finished_at=int(time.time()))
+        return
+    messages = []
+    for index, current_id in enumerate(item_ids, 1):
+        command = install_command(source, kind, current_id)
+        if not command:
+            update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
+            return
+        result = run_install_command(job_id, command, index, total_items, current_id)
+        messages.append(result["message"])
+        if not result["ok"]:
+            update_job(
+                job_id,
+                status="failed",
+                stage="failed",
+                message=result["message"][-2000:],
+                finished_at=int(time.time()),
+            )
+            return
+        if result.get("filename"):
+            item_url = (
+                STEAM_WORKSHOP_URL.format(id=current_id)
+                if source == "workshop"
+                else GAMEMAPS_DETAILS_URL.format(id=current_id)
+            )
+            item_title = title or result["filename"]
+            if title and total_items > 1:
+                item_title = f"{title} ({index}/{total_items})"
+            register_installed_package(
+                result["filename"],
+                source,
+                kind,
+                current_id,
+                item_title,
+                url if current_id == catalog_id else item_url,
+                [current_id],
+            )
+            addon = next((item for item in vpk_inventory() if item["filename"] == result["filename"]), None)
+            if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
+                messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
+        update_job(
+            job_id,
+            items_done=index,
+            progress=int((index / total_items) * 100),
+            downloaded_bytes=0,
+            total_bytes=0,
+            message=f"Installed item {index}/{total_items}: {current_id}",
+        )
+    update_job(
+        job_id,
+        status="succeeded",
+        stage="finished",
+        progress=100,
+        current_item="",
+        message=("\n".join(messages) or "Install finished")[-2000:],
         finished_at=int(time.time()),
     )
 
 
-def create_catalog_install_job(source, kind, item_id, title="", url=""):
+def known_install_ids(source, kind, item_id):
+    for item in KNOWN_CATALOG_ITEMS:
+        if item["source"] == source and item["kind"] == kind and item["id"] == item_id:
+            return [str(value) for value in item.get("install_ids", [])]
+    return []
+
+
+def create_catalog_install_job(source, kind, item_id, title="", url="", install_ids=None):
     if source not in {"workshop", "gamemaps"}:
         return {"ok": False, "message": "Source must be workshop or gamemaps"}
     if kind not in {"map", "mod"}:
@@ -847,6 +1456,11 @@ def create_catalog_install_job(source, kind, item_id, title="", url=""):
         return {"ok": False, "message": "GameMaps installs are map-only"}
     if not WORKSHOP_ID_RE.match(item_id):
         return {"ok": False, "message": "Catalog id must be numeric"}
+    item_ids = install_ids or known_install_ids(source, kind, item_id) or [item_id]
+    if source != "workshop" and len(item_ids) > 1:
+        return {"ok": False, "message": "Bundle installs are workshop-only"}
+    if any(not WORKSHOP_ID_RE.match(value) for value in item_ids):
+        return {"ok": False, "message": "Catalog install ids must be numeric"}
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
@@ -854,18 +1468,27 @@ def create_catalog_install_job(source, kind, item_id, title="", url=""):
         "kind": kind,
         "workshop_id": item_id if source == "workshop" else "",
         "catalog_id": item_id,
+        "install_ids": item_ids,
         "title": title,
         "url": url,
         "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "current_item": "",
+        "items_done": 0,
+        "items_total": len(item_ids),
         "message": "Queued",
         "created_at": int(time.time()),
         "finished_at": None,
     }
     with JOBS_LOCK:
         JOBS[job_id] = job
+        persist_job(job)
     thread = threading.Thread(
-        target=install_catalog_job,
-        args=(job_id, source, kind, item_id),
+        target=install_catalog_bundle_job,
+        args=(job_id, source, kind, item_ids, title, url, item_id),
         daemon=True,
     )
     thread.start()
@@ -898,6 +1521,77 @@ def set_addon_state(filename, state):
     return {"ok": False, "message": result["stderr"] or result["stdout"] or "Addon update failed"}
 
 
+def current_default_maps():
+    return {value.lower() for value in (default_map(info["script"]) for info in ROOMS.values()) if value}
+
+
+def package_by_filename(filename):
+    for addon in list_addons():
+        if addon["filename"] == filename and addon["kind"] == "map":
+            return addon
+    return None
+
+
+def delete_map_package(filename, mode):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        return {"ok": False, "message": "Invalid package filename"}
+    if mode not in {"soft", "purge"}:
+        return {"ok": False, "message": "Invalid delete mode"}
+    package = package_by_filename(filename)
+    if not package:
+        return {"ok": False, "message": "Map package not found"}
+    default_maps = current_default_maps()
+    package_maps = {name.lower() for name in package.get("maps", [])}
+    if default_maps & package_maps:
+        return {"ok": False, "message": "Package contains a current default map; switch defaults before deleting it"}
+    if package.get("state") != "deleted":
+        result = run_cmd(
+            ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "delete-map-package", filename, mode],
+            timeout=120,
+        )
+        if not result["ok"]:
+            return {"ok": False, "message": result["stderr"] or result["stdout"] or "Package delete failed"}
+    packages = read_package_registry()
+    if mode == "purge":
+        packages.pop(filename, None)
+    else:
+        record = packages.get(filename) or {
+            "filename": filename,
+            "title": package.get("title", filename),
+            "source": package.get("source", ""),
+            "id": package.get("catalog_id", ""),
+            "url": package.get("url", ""),
+            "install_ids": package.get("install_ids", []),
+            "maps": package.get("maps", []),
+            "missions": package.get("missions", []),
+        }
+        record.update({"status": "deleted", "deleted_at": int(time.time())})
+        packages[filename] = record
+    write_package_registry(packages)
+    return {"ok": True, "message": f"{filename} {mode} deleted"}
+
+
+def reinstall_map_package(filename):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        return {"ok": False, "message": "Invalid package filename"}
+    package = package_by_filename(filename)
+    if not package:
+        return {"ok": False, "message": "Map package record not found"}
+    source = package.get("source", "")
+    item_id = package.get("catalog_id", "")
+    install_ids = package.get("install_ids", [])
+    if source not in {"workshop", "gamemaps"} or not WORKSHOP_ID_RE.match(item_id):
+        return {"ok": False, "message": "Package does not have a reinstall source"}
+    return create_catalog_install_job(
+        source,
+        "map",
+        item_id,
+        package.get("title", filename),
+        package.get("url", ""),
+        install_ids,
+    )
+
+
 def render_page():
     return """<!doctype html>
 <html lang="en">
@@ -910,7 +1604,7 @@ def render_page():
     body { margin: 0; background: #f7f7f4; color: #202322; }
     header { padding: 20px 24px 12px; border-bottom: 1px solid #d9ded8; background: #ffffff; }
     h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
-    main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px; }
     .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
     .card { background: #fff; border: 1px solid #d9ded8; border-radius: 8px; padding: 16px; }
     .room-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -920,10 +1614,13 @@ def render_page():
     dl { display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; margin: 16px 0; font-size: 14px; }
     dt { color: #68706a; }
     dd { margin: 0; overflow-wrap: anywhere; }
-    button { height: 36px; border: 1px solid #b8c1ba; background: #25362d; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; }
+    button { height: 36px; border: 1px solid #b8c1ba; background: #25362d; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; white-space: nowrap; }
+    button.secondary { background: #fff; color: #25362d; }
+    button.danger { background: #733331; border-color: #733331; }
     button:disabled { opacity: .55; cursor: wait; }
     select { height: 36px; min-width: 150px; max-width: 100%; border: 1px solid #b8c1ba; border-radius: 7px; background: #fff; padding: 0 9px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .primary-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     .field { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     input { height: 34px; min-width: 180px; border: 1px solid #b8c1ba; border-radius: 7px; background: #fff; padding: 0 9px; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
@@ -933,17 +1630,35 @@ def render_page():
     a { color: #1f5f46; }
     .maps { margin-top: 16px; }
     .maps-list { display: grid; gap: 10px; font-size: 13px; line-height: 1.8; }
-    details { border-top: 1px solid #e4e7e3; padding-top: 8px; }
-    details:first-child { border-top: 0; padding-top: 0; }
-    summary { cursor: pointer; font-weight: 650; }
+    .maps-list details { border-top: 1px solid #e4e7e3; padding-top: 8px; }
+    .maps-list details:first-child { border-top: 0; padding-top: 0; }
+    .maps-list summary { cursor: pointer; font-weight: 650; }
     .chapter-list { columns: 2 220px; margin-top: 6px; }
     .stack { display: grid; gap: 16px; margin-top: 16px; }
+    .split-panel { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); gap: 18px; align-items: start; margin-top: 14px; }
+    .section-label { font-weight: 700; margin-bottom: 8px; }
     .rows { display: grid; gap: 8px; margin-top: 12px; }
     .row { display: grid; grid-template-columns: minmax(150px, 1fr) 88px 86px 130px; gap: 8px; align-items: center; font-size: 13px; }
+    .package-row { grid-template-columns: minmax(260px, 1fr) 88px 86px minmax(180px, auto); padding: 8px 0; border-top: 1px solid #e4e7e3; }
+    .package-row:first-child { border-top: 0; }
+    .package-title { font-weight: 700; margin-bottom: 3px; }
+    .package-actions { justify-content: flex-end; }
+    .more-actions { position: relative; border: 0; padding: 0; }
+    .more-actions summary { list-style: none; height: 34px; border: 1px solid #b8c1ba; border-radius: 7px; padding: 0 12px; display: inline-flex; align-items: center; background: #fff; color: #25362d; cursor: pointer; font-weight: 650; }
+    .more-actions summary::-webkit-details-marker { display: none; }
+    .menu-actions { position: absolute; right: 0; top: 40px; z-index: 10; min-width: 170px; display: grid; gap: 6px; padding: 8px; border: 1px solid #d9ded8; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+    .menu-actions button { width: 100%; }
     .job { padding: 8px 0; border-top: 1px solid #e4e7e3; font-size: 13px; }
+    .progress-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+    progress { width: min(360px, 100%); height: 14px; accent-color: #25362d; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
     .muted { color: #68706a; font-size: 13px; }
     #notice { min-height: 20px; }
+    @media (max-width: 760px) {
+      .split-panel { grid-template-columns: 1fr; }
+      .package-row, .row { grid-template-columns: 1fr; }
+      .package-actions { justify-content: flex-start; }
+    }
   </style>
 </head>
 <body>
@@ -970,8 +1685,16 @@ def render_page():
           <input id="workshop-id" inputmode="numeric" autocomplete="off" placeholder="Workshop ID">
           <button id="install-workshop">Install ID</button>
         </div>
-        <div id="catalog-results" class="catalog-results"></div>
-        <div id="jobs" style="margin-top: 12px"></div>
+        <div class="split-panel">
+          <div>
+            <div class="section-label">Search Results</div>
+            <div id="catalog-results" class="catalog-results"></div>
+          </div>
+          <div>
+            <div class="section-label">Install Jobs</div>
+            <div id="jobs"></div>
+          </div>
+        </div>
       </section>
       <section class="card">
         <div class="room-head">
@@ -1008,6 +1731,7 @@ def render_page():
     const catalogResultsEl = document.querySelector("#catalog-results");
     const noticeEl = document.querySelector("#notice");
     let currentState = null;
+    let refreshTimer = null;
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -1030,12 +1754,17 @@ def render_page():
           <dt>Started</dt><dd>${room.started_at || "unknown"}</dd>
           <dt>Exit status</dt><dd>${room.exit_status}</dd>
         </dl>
-        <div class="actions">
+        <div class="primary-actions">
           <select data-campaign-select="${room.id}"></select>
           <select data-map-select="${room.id}"></select>
           <button data-save="${room.id}">Save</button>
-          <button data-save-restart="${room.id}">Save & Restart</button>
-          <button data-restart="${room.id}">Restart</button>
+          <details class="more-actions">
+            <summary>More</summary>
+            <div class="menu-actions">
+              <button class="secondary" data-save-restart="${room.id}">Save & Restart</button>
+              <button class="secondary" data-restart="${room.id}">Restart Room</button>
+            </div>
+          </details>
         </div>
       </article>`;
     }
@@ -1072,11 +1801,31 @@ def render_page():
         const label = addon.state === "enabled" ? "Disable" : "Enable";
         const sizeMb = (addon.size / 1024 / 1024).toFixed(1);
         const maps = addon.maps && addon.maps.length ? addon.maps.join(", ") : "mission only";
-        return `<div class="row">
-          <div><div class="mono">${esc(addon.filename)}</div><div class="muted">${esc(maps)}</div></div>
-          <div>${addon.state}</div>
-          <div>${sizeMb} MB</div>
-          <button data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>
+        const deleted = addon.state === "deleted";
+        const openLink = addon.url ? `<a href="${esc(addon.url)}" target="_blank" rel="noreferrer">Open</a>` : "";
+        const reinstall = addon.reinstallable ? `<button data-package-reinstall="${esc(addon.filename)}">Reinstall</button>` : "";
+        const disable = deleted ? "" : `<button class="secondary" data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>`;
+        const softDelete = deleted ? "" : `<button class="secondary" data-package-delete="${esc(addon.filename)}" data-package-mode="soft">Soft Delete</button>`;
+        const purgeDelete = `<button class="danger" data-package-delete="${esc(addon.filename)}" data-package-mode="purge">Purge Delete</button>`;
+        const source = addon.source && addon.catalog_id ? `${addon.source} ${addon.catalog_id}` : "local package";
+        const title = addon.title && addon.title !== addon.filename ? addon.title : addon.filename;
+        const statusText = deleted ? "deleted" : addon.state;
+        const sizeText = deleted ? "removed" : `${sizeMb} MB`;
+        const moreActions = [disable, softDelete, purgeDelete].filter(Boolean).join("");
+        const moreMenu = moreActions ? `<details class="more-actions">
+          <summary>More</summary>
+          <div class="menu-actions">${moreActions}</div>
+        </details>` : "";
+        return `<div class="row package-row">
+          <div>
+            <div class="package-title">${esc(title)}</div>
+            <div class="muted mono">${esc(addon.filename)}</div>
+            <div class="muted">${esc(maps)}</div>
+            <div class="muted">${esc(source)}</div>
+          </div>
+          <div>${statusText}</div>
+          <div>${sizeText}</div>
+          <div class="actions package-actions">${openLink}${reinstall}${moreMenu}</div>
         </div>`;
       }).join("");
     }
@@ -1090,13 +1839,42 @@ def render_page():
         <strong>${esc(job.status)}</strong>
         <span class="mono">${esc(job.source || "workshop")} ${esc(job.kind)} ${esc(job.catalog_id || job.workshop_id)}</span>
         ${job.title ? `<div>${esc(job.title)}</div>` : ""}
+        ${job.install_ids && job.install_ids.length > 1 ? `<div class="muted mono">packages ${job.install_ids.map(esc).join(", ")}</div>` : ""}
+        ${jobProgress(job)}
         <div class="muted">${esc(job.message)}</div>
       </div>`).join("");
     }
 
+    function formatBytes(value) {
+      const size = Number(value || 0);
+      if (!size) return "";
+      const units = ["B", "KB", "MB", "GB"];
+      let current = size;
+      let unit = 0;
+      while (current >= 1024 && unit < units.length - 1) {
+        current /= 1024;
+        unit += 1;
+      }
+      return unit === 0 ? `${current} ${units[unit]}` : `${current.toFixed(1)} ${units[unit]}`;
+    }
+
+    function jobProgress(job) {
+      const active = job.status === "queued" || job.status === "running";
+      const progress = Number(job.progress || 0);
+      const total = Number(job.total_bytes || 0);
+      const downloaded = Number(job.downloaded_bytes || 0);
+      const itemText = job.items_total > 1 ? `${job.items_done || 0}/${job.items_total}` : "";
+      const bytes = total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : "";
+      const label = [job.stage || "", itemText, bytes].filter(Boolean).join(" · ");
+      if (job.stage === "extracting" && active) {
+        return `<div class="progress-line"><progress></progress><span class="muted">${esc(label || "extracting")}</span></div>`;
+      }
+      return `<div class="progress-line"><progress max="100" value="${Math.max(0, Math.min(100, progress))}"></progress><span class="muted">${Math.round(progress)}%${label ? ` · ${esc(label)}` : ""}</span></div>`;
+    }
+
     function renderCatalogResults(results) {
       if (!results.length) {
-        catalogResultsEl.innerHTML = `<div class="muted">No matching maps or mods found.</div>`;
+        catalogResultsEl.innerHTML = `<div class="muted">No matching maps or mods found. Steam or GameMaps search may be unavailable; try a Workshop ID if you know it.</div>`;
         return;
       }
       catalogResultsEl.innerHTML = results.map(item => {
@@ -1104,15 +1882,19 @@ def render_page():
         const source = item.source === "gamemaps" ? "GameMaps" : "Workshop";
         const reason = item.reason ? `<div class="muted">${esc(item.reason)}</div>` : "";
         const size = item.size ? `<span class="pill">${esc(item.size)}</span>` : "";
+        const packages = item.install_ids && item.install_ids.length > 1
+          ? `<div class="muted mono">packages ${item.install_ids.map(esc).join(", ")}</div>`
+          : "";
         return `<div class="catalog-item">
           <div class="catalog-head">
             <div><strong>${esc(item.title)}</strong> <span class="pill">${source}</span> ${size}</div>
             <div class="actions">
               <a href="${esc(item.url)}" target="_blank" rel="noreferrer">Open</a>
-              <button data-catalog-install="${esc(item.id)}" data-catalog-source="${esc(item.source)}" data-catalog-kind="${esc(item.kind)}" data-catalog-title="${esc(item.title)}" data-catalog-url="${esc(item.url)}"${disabled}>Install</button>
+              <button data-catalog-install="${esc(item.id)}" data-catalog-source="${esc(item.source)}" data-catalog-kind="${esc(item.kind)}" data-catalog-title="${esc(item.title)}" data-catalog-url="${esc(item.url)}" data-catalog-install-ids="${esc((item.install_ids || []).join(","))}"${disabled}>Install</button>
             </div>
           </div>
           <div class="muted mono">${esc(item.kind)} ${esc(item.id)}</div>
+          ${packages}
           ${item.summary ? `<div class="muted">${esc(item.summary)}</div>` : ""}
           ${reason}
         </div>`;
@@ -1196,6 +1978,13 @@ def render_page():
       renderAddons(data.addons || []);
       renderJobs(data.jobs || []);
       noticeEl.textContent = `Updated ${new Date(data.generated_at * 1000).toLocaleString()}`;
+      scheduleNextRefresh(data.jobs || []);
+    }
+
+    function scheduleNextRefresh(jobs) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      const active = jobs.some(job => job.status === "queued" || job.status === "running");
+      refreshTimer = setTimeout(() => loadState().catch(() => {}), active ? 2000 : 30000);
     }
 
     async function restartRoom(room) {
@@ -1259,12 +2048,12 @@ def render_page():
       });
     }
 
-    async function installCatalog(source, kind, id, title, url) {
+    async function installCatalog(source, kind, id, title, url, installIds) {
       noticeEl.textContent = "Queueing install...";
       const res = await fetch("/api/catalog/install", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
-        body: new URLSearchParams({source, kind, id, title, url})
+        body: new URLSearchParams({source, kind, id, title, url, install_ids: installIds || ""})
       });
       const data = await res.json();
       noticeEl.textContent = data.message;
@@ -1277,6 +2066,34 @@ def render_page():
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({filename, state})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function deleteMapPackage(filename, mode) {
+      const prompt = mode === "purge"
+        ? `Permanently delete ${filename}? This removes local files and the saved source record. Reinstalling later will require a fresh search.`
+        : `Soft delete ${filename}? This removes local files but keeps the source link for reinstall.`;
+      if (!confirm(prompt)) return;
+      noticeEl.textContent = "Deleting package...";
+      const res = await fetch("/api/map-package/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({filename, mode})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function reinstallMapPackage(filename) {
+      noticeEl.textContent = "Queueing reinstall...";
+      const res = await fetch("/api/map-package/reinstall", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({filename})
       });
       const data = await res.json();
       noticeEl.textContent = data.message;
@@ -1307,7 +2124,8 @@ def render_page():
         event.target.dataset.catalogKind,
         id,
         event.target.dataset.catalogTitle || "",
-        event.target.dataset.catalogUrl || ""
+        event.target.dataset.catalogUrl || "",
+        event.target.dataset.catalogInstallIds || ""
       ).finally(() => event.target.disabled = false);
     });
     roomsEl.addEventListener("click", event => {
@@ -1342,12 +2160,23 @@ def render_page():
     mapPackagesEl.addEventListener("click", event => {
       const filename = event.target.dataset.addon;
       const state = event.target.dataset.addonState;
-      if (!filename || !state) return;
-      event.target.disabled = true;
-      setAddonState(filename, state).finally(() => event.target.disabled = false);
+      const deleteFilename = event.target.dataset.packageDelete;
+      const deleteMode = event.target.dataset.packageMode;
+      const reinstallFilename = event.target.dataset.packageReinstall;
+      if (filename && state) {
+        event.target.disabled = true;
+        setAddonState(filename, state).finally(() => event.target.disabled = false);
+      }
+      if (deleteFilename && deleteMode) {
+        event.target.disabled = true;
+        deleteMapPackage(deleteFilename, deleteMode).finally(() => event.target.disabled = false);
+      }
+      if (reinstallFilename) {
+        event.target.disabled = true;
+        reinstallMapPackage(reinstallFilename).finally(() => event.target.disabled = false);
+      }
     });
     loadState().catch(err => noticeEl.textContent = err.message);
-    setInterval(() => loadState().catch(() => {}), 30000);
   </script>
 </body>
 </html>"""
@@ -1441,13 +2270,25 @@ class Handler(BaseHTTPRequestHandler):
             item_id = fields.get("id", [""])[0]
             title = fields.get("title", [""])[0][:180]
             url = fields.get("url", [""])[0][:300]
-            result = create_catalog_install_job(source, kind, item_id, title, url)
+            install_ids = [value for value in fields.get("install_ids", [""])[0].split(",") if value]
+            result = create_catalog_install_job(source, kind, item_id, title, url, install_ids)
             self.send_json(200 if result["ok"] else 400, result)
             return
         if self.path == "/api/addon/state":
             filename = fields.get("filename", [""])[0]
             state = fields.get("state", [""])[0]
             result = set_addon_state(filename, state)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/map-package/delete":
+            filename = fields.get("filename", [""])[0]
+            mode = fields.get("mode", [""])[0]
+            result = delete_map_package(filename, mode)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/map-package/reinstall":
+            filename = fields.get("filename", [""])[0]
+            result = reinstall_map_package(filename)
             self.send_json(200 if result["ok"] else 400, result)
             return
         self.send_error(404)
@@ -1461,6 +2302,7 @@ def main():
     port = int(os.environ.get("L4D2_WEB_PORT", "8080"))
     if not ADMIN_PASSWORD:
         raise SystemExit("L4D2_WEB_PASSWORD must be set")
+    recover_interrupted_jobs()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Serving L4D2 manager on {host}:{port}")
     server.serve_forever()
