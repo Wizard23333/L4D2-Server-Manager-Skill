@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import base64
+import cgi
+import hashlib
+import hmac
 import html
+from http import cookies
 import json
 import os
 import re
+import secrets
+import shutil
 import struct
 import subprocess
 import threading
@@ -12,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -36,18 +43,46 @@ MAPS_DIR = Path("/opt/l4d2/left4dead2/maps")
 MISSIONS_DIR = Path("/opt/l4d2/left4dead2/missions")
 ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons")
 DISABLED_ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons_disabled")
-JOBS_DIR = Path(os.environ.get("L4D2_WEB_JOBS_DIR", "/var/lib/l4d2-manager-web/jobs"))
-PACKAGES_FILE = Path(os.environ.get("L4D2_WEB_PACKAGES_FILE", "/var/lib/l4d2-manager-web/packages.json"))
+STATE_DIR = Path(os.environ.get("L4D2_WEB_STATE_DIR", "/var/lib/l4d2-manager-web"))
+JOBS_DIR = Path(os.environ.get("L4D2_WEB_JOBS_DIR", str(STATE_DIR / "jobs")))
+UPLOADS_DIR = Path(os.environ.get("L4D2_WEB_UPLOADS_DIR", str(STATE_DIR / "uploads")))
+EXPORTS_DIR = Path(os.environ.get("L4D2_WEB_EXPORTS_DIR", str(STATE_DIR / "exports")))
+PACKAGES_FILE = Path(os.environ.get("L4D2_WEB_PACKAGES_FILE", str(STATE_DIR / "packages.json")))
+MAX_UPLOAD_BYTES = int(os.environ.get("L4D2_WEB_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+EXPORT_RETENTION_SECONDS = int(os.environ.get("L4D2_WEB_EXPORT_RETENTION_SECONDS", str(24 * 60 * 60)))
+EXPORT_MIN_FREE_BYTES = int(os.environ.get("L4D2_WEB_EXPORT_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
+EXPORT_MIN_MEMORY_BYTES = int(os.environ.get("L4D2_WEB_EXPORT_MIN_MEMORY_BYTES", str(256 * 1024 * 1024)))
 ADMIN_USER = os.environ.get("L4D2_WEB_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("L4D2_WEB_PASSWORD", "")
+SESSION_SECRET = os.environ.get("L4D2_WEB_SESSION_SECRET", "")
+SESSION_TTL_SECONDS = int(os.environ.get("L4D2_WEB_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+SESSION_COOKIE_SECURE = os.environ.get("L4D2_WEB_COOKIE_SECURE", "0") == "1"
 STEAM_WEB_API_KEY = os.environ.get("STEAM_WEB_API_KEY", "")
 AUTH_REALM = "L4D2 Manager"
 WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
+JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+STAGED_UPLOAD_RE = re.compile(r"^upload_[a-f0-9]{12}_[a-f0-9]{12}\.(vpk|zip)$")
 CATALOG_FORBIDDEN_CHARS = set('/\\<>[]{}$;|`')
+MANIFEST_FORMAT = "l4d2-manager-web-manifest"
+MAX_MANIFEST_BYTES = 1024 * 1024
 JOBS = {}
+JOB_PROCESSES = {}
+SESSIONS = {}
 JOBS_LOCK = threading.Lock()
+PROCESSES_LOCK = threading.Lock()
+SESSIONS_LOCK = threading.Lock()
 EXCLUDED_CAMPAIGN_MAPS = {"c5m1_waterfront_sndscape"}
+SYSTEM_SERVICES = [
+    {"id": "room1", "label": "Room 1", "service": "l4d2"},
+    {"id": "room2", "label": "Room 2", "service": "l4d2_2"},
+    {"id": "web", "label": "Web Panel", "service": "l4d2-manager-web"},
+]
+DISK_TARGETS = [
+    {"id": "root", "label": "Root", "path": Path("/")},
+    {"id": "l4d2", "label": "L4D2", "path": Path("/opt/l4d2")},
+    {"id": "web_state", "label": "Web State", "path": STATE_DIR},
+]
 STEAM_DETAILS_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
 STEAM_QUERY_URL = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
 STEAM_BROWSE_URL = "https://steamcommunity.com/workshop/browse/"
@@ -662,22 +697,25 @@ def list_addons():
     addons = []
     inventory = vpk_inventory()
     packages = sync_package_registry(inventory)
-    seen_packages = set()
+    seen_records = set()
     for item in inventory:
         try:
             modified_at = int(item["path"].stat().st_mtime)
         except OSError:
             modified_at = 0
         package = packages.get(item["filename"], {})
+        seen_records.add(item["filename"])
         if item["is_map_package"]:
-            seen_packages.add(item["filename"])
+            kind = "map"
+        else:
+            kind = package.get("kind") or "mod"
         addons.append(
             {
                 "filename": item["filename"],
                 "state": item["state"],
                 "size": item["size"],
                 "modified_at": modified_at,
-                "kind": "map" if item["is_map_package"] else "mod",
+                "kind": kind,
                 "maps": item["maps"],
                 "missions": sorted(item["missions"].keys()),
                 "source": package.get("source", ""),
@@ -685,20 +723,22 @@ def list_addons():
                 "title": package.get("title", item["filename"]),
                 "url": package.get("url", ""),
                 "install_ids": package.get("install_ids", []),
-                "package_status": package.get("status", "installed") if item["is_map_package"] else "",
-                "reinstallable": bool(package.get("source") and package.get("id")) if item["is_map_package"] else False,
+                "package_status": package.get("status", "installed"),
+                "reinstallable": bool(package.get("source") == "workshop" and package.get("id")),
             }
         )
     for filename, package in packages.items():
-        if filename in seen_packages or package.get("status") != "deleted":
+        if filename in seen_records or package.get("status") not in {"deleted", "remote", "not_installed"}:
             continue
+        kind = package.get("kind") or "map"
+        state = "remote" if package.get("status") in {"remote", "not_installed"} else "deleted"
         addons.append(
             {
                 "filename": filename,
-                "state": "deleted",
+                "state": state,
                 "size": 0,
-                "modified_at": package.get("deleted_at", 0),
-                "kind": "map",
+                "modified_at": package.get("deleted_at") or package.get("imported_at", 0),
+                "kind": kind,
                 "maps": package.get("maps", []),
                 "missions": package.get("missions", []),
                 "source": package.get("source", ""),
@@ -706,8 +746,8 @@ def list_addons():
                 "title": package.get("title", filename),
                 "url": package.get("url", ""),
                 "install_ids": package.get("install_ids", []),
-                "package_status": "deleted",
-                "reinstallable": bool(package.get("source") and package.get("id")),
+                "package_status": package.get("status", state),
+                "reinstallable": bool(package.get("source") == "workshop" and package.get("id")),
             }
         )
     return addons
@@ -752,10 +792,205 @@ def room_status(room, campaigns=None):
     }
 
 
+def parse_int(value):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def percent(used, total):
+    if not total:
+        return None
+    return round((used / total) * 100, 1)
+
+
+def read_meminfo():
+    values = {}
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.split()
+                if len(parts) >= 2:
+                    values[parts[0].rstrip(":")] = int(parts[1]) * 1024
+    except (OSError, ValueError):
+        return values
+    return values
+
+
+def memory_snapshot(meminfo):
+    total = meminfo.get("MemTotal", 0)
+    available = meminfo.get("MemAvailable", 0)
+    used = max(0, total - available) if total else 0
+    return {
+        "total": total,
+        "used": used,
+        "available": available,
+        "percent": percent(used, total),
+    }
+
+
+def swap_snapshot(meminfo):
+    total = meminfo.get("SwapTotal", 0)
+    free = meminfo.get("SwapFree", 0)
+    used = max(0, total - free) if total else 0
+    return {
+        "total": total,
+        "used": used,
+        "free": free,
+        "percent": percent(used, total),
+    }
+
+
+def read_cpu_times():
+    try:
+        with open("/proc/stat", encoding="utf-8") as handle:
+            first = handle.readline().split()
+    except OSError:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    try:
+        values = [int(value) for value in first[1:]]
+    except ValueError:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def cpu_percent_sample():
+    first = read_cpu_times()
+    if not first:
+        return None
+    time.sleep(1)
+    second = read_cpu_times()
+    if not second:
+        return None
+    total_delta = second[0] - first[0]
+    idle_delta = second[1] - first[1]
+    if total_delta <= 0:
+        return None
+    return round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 1)
+
+
+def cpu_snapshot():
+    try:
+        load_avg = os.getloadavg()
+    except OSError:
+        load_avg = (None, None, None)
+    return {
+        "cores": os.cpu_count() or 0,
+        "percent": cpu_percent_sample(),
+        "load_average": [round(value, 2) if value is not None else None for value in load_avg],
+    }
+
+
+def disk_snapshot():
+    disks = []
+    for target in DISK_TARGETS:
+        path = target["path"]
+        try:
+            usage = shutil.disk_usage(path)
+            total = usage.total
+            free = usage.free
+            used = usage.used
+            disks.append(
+                {
+                    "id": target["id"],
+                    "label": target["label"],
+                    "path": str(path),
+                    "total": total,
+                    "used": used,
+                    "free": free,
+                    "percent": percent(used, total),
+                }
+            )
+        except OSError:
+            disks.append(
+                {
+                    "id": target["id"],
+                    "label": target["label"],
+                    "path": str(path),
+                    "total": None,
+                    "used": None,
+                    "free": None,
+                    "percent": None,
+                }
+            )
+    return disks
+
+
+def uptime_snapshot():
+    try:
+        uptime_seconds = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    except (OSError, IndexError, ValueError):
+        return {"seconds": None, "display": "unknown"}
+    total = int(uptime_seconds)
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    return {"seconds": total, "display": " ".join(parts)}
+
+
+def system_service_snapshot():
+    services = []
+    for item in SYSTEM_SERVICES:
+        result = run_cmd(
+            [
+                "/usr/bin/systemctl",
+                "show",
+                item["service"],
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "MemoryCurrent",
+                "-p",
+                "CPUUsageNSec",
+                "--no-pager",
+            ],
+            timeout=5,
+        )
+        fields = parse_systemctl_show(result["stdout"]) if result["ok"] else {}
+        services.append(
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "service": item["service"],
+                "active": fields.get("ActiveState", "unknown"),
+                "sub_state": fields.get("SubState", "unknown"),
+                "memory_current": parse_int(fields.get("MemoryCurrent")),
+                "cpu_usage_nsec": parse_int(fields.get("CPUUsageNSec")),
+            }
+        )
+    return services
+
+
+def system_snapshot():
+    meminfo = read_meminfo()
+    return {
+        "cpu": cpu_snapshot(),
+        "memory": memory_snapshot(meminfo),
+        "swap": swap_snapshot(meminfo),
+        "disk": disk_snapshot(),
+        "uptime": uptime_snapshot(),
+        "processes": system_service_snapshot(),
+    }
+
+
 def snapshot():
     campaigns = build_campaigns()
     return {
         "generated_at": int(time.time()),
+        "system": system_snapshot(),
         "rooms": [room_status(room, campaigns) for room in ROOMS],
         "maps": available_maps(),
         "campaigns": campaigns,
@@ -809,6 +1044,41 @@ def update_job(job_id, **fields):
             return
         job.update(fields)
         persist_job(job)
+
+
+def job_status(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return job.get("status") if job else ""
+
+
+def register_job_process(job_id, process):
+    with PROCESSES_LOCK:
+        JOB_PROCESSES[job_id] = process
+
+
+def unregister_job_process(job_id, process=None):
+    with PROCESSES_LOCK:
+        if process is None or JOB_PROCESSES.get(job_id) is process:
+            JOB_PROCESSES.pop(job_id, None)
+
+
+def current_job_process(job_id):
+    with PROCESSES_LOCK:
+        return JOB_PROCESSES.get(job_id)
+
+
+def get_job(job_id):
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return dict(job) if job else None
+
+
+def log_event(event, **fields):
+    payload = {"event": event, "timestamp": int(time.time())}
+    payload.update(fields)
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
 
 
 def ensure_jobs_dir():
@@ -901,15 +1171,27 @@ def infer_package_source(filename):
     if match:
         item_id = match.group(1)
         return {
+            "kind": "map",
             "source": "workshop",
             "id": item_id,
             "url": STEAM_WORKSHOP_URL.format(id=item_id),
             "install_ids": known_install_ids("workshop", "map", item_id) or [item_id],
         }
+    match = re.match(r"mod_(\d{4,20})_", filename)
+    if match:
+        item_id = match.group(1)
+        return {
+            "kind": "mod",
+            "source": "workshop",
+            "id": item_id,
+            "url": STEAM_WORKSHOP_URL.format(id=item_id),
+            "install_ids": [item_id],
+        }
     match = re.match(r"map_gamemaps_(\d{1,12})_", filename)
     if match:
         item_id = match.group(1)
         return {
+            "kind": "map",
             "source": "gamemaps",
             "id": item_id,
             "url": GAMEMAPS_DETAILS_URL.format(id=item_id),
@@ -923,18 +1205,20 @@ def infer_package_source(filename):
         aliases = [normalize_catalog_query(alias) for alias in item.get("aliases", [])]
         if title and title in stem or any(alias and alias in stem for alias in aliases):
             return {
+                "kind": item["kind"],
                 "source": item["source"],
                 "id": item["id"],
                 "url": item["url"],
                 "install_ids": item.get("install_ids") or [item["id"]],
             }
-    return {"source": "", "id": "", "url": "", "install_ids": []}
+    return {"kind": "", "source": "", "id": "", "url": "", "install_ids": []}
 
 
 def package_record_from_addon(addon, source_data=None):
     source_data = source_data or infer_package_source(addon["filename"])
     return {
         "filename": addon["filename"],
+        "kind": source_data.get("kind") or ("map" if addon.get("is_map_package") else "mod"),
         "source": source_data.get("source", ""),
         "id": str(source_data.get("id", "")),
         "title": addon.get("title") or addon["filename"],
@@ -952,17 +1236,17 @@ def sync_package_registry(addons=None):
     addons = addons if addons is not None else vpk_inventory()
     changed = False
     for addon in addons:
-        if not addon.get("is_map_package"):
-            continue
         record = packages.get(addon["filename"]) or package_record_from_addon(addon)
         source_data = infer_package_source(addon["filename"])
+        kind = record.get("kind") or source_data.get("kind") or ("map" if addon.get("is_map_package") else "mod")
         record.update({
             "filename": addon["filename"],
+            "kind": kind,
             "status": "installed",
             "maps": addon.get("maps", []),
             "missions": sorted(addon.get("missions", {}).keys()),
         })
-        for key in ("source", "id", "url", "install_ids"):
+        for key in ("source", "id", "url", "install_ids", "kind"):
             if not record.get(key) and source_data.get(key):
                 record[key] = source_data[key]
         packages[addon["filename"]] = record
@@ -973,7 +1257,7 @@ def sync_package_registry(addons=None):
 
 
 def register_installed_package(filename, source, kind, item_id, title, url, install_ids):
-    if kind != "map" or not ADDON_RE.match(filename):
+    if kind not in {"map", "mod"} or not ADDON_RE.match(filename):
         return
     addons = vpk_inventory()
     addon = next((item for item in addons if item["filename"] == filename), None)
@@ -983,13 +1267,17 @@ def register_installed_package(filename, source, kind, item_id, title, url, inst
     packages[filename] = package_record_from_addon(
         addon,
         {
+            "kind": kind,
             "source": source,
             "id": item_id,
-            "url": url or (STEAM_WORKSHOP_URL.format(id=item_id) if source == "workshop" else GAMEMAPS_DETAILS_URL.format(id=item_id)),
-            "install_ids": install_ids or [item_id],
+            "url": url
+            or (STEAM_WORKSHOP_URL.format(id=item_id) if source == "workshop" and item_id else "")
+            or (GAMEMAPS_DETAILS_URL.format(id=item_id) if source == "gamemaps" and item_id else ""),
+            "install_ids": install_ids or ([item_id] if item_id else []),
         },
     )
     packages[filename]["title"] = title or packages[filename]["title"]
+    packages[filename]["kind"] = kind
     write_package_registry(packages)
 
 
@@ -1286,6 +1574,8 @@ def install_command(source, kind, item_id):
 
 
 def run_install_command(job_id, command, index, total_items, item_id):
+    if job_status(job_id) == "cancelled":
+        return {"ok": False, "cancelled": True, "message": "Install cancelled"}
     update_job(
         job_id,
         status="running",
@@ -1300,19 +1590,27 @@ def run_install_command(job_id, command, index, total_items, item_id):
     )
     lines = []
     try:
+        env = os.environ.copy()
+        env["L4D2_WEB_JOB_ID"] = job_id
+        env["L4D2_WEB_CURRENT_ITEM"] = item_id
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
+        register_job_process(job_id, process)
     except Exception as exc:
         return {"ok": False, "message": str(exc)}
 
     try:
         assert process.stdout is not None
         for line in process.stdout:
+            if job_status(job_id) == "cancelled":
+                process.terminate()
+                return {"ok": False, "cancelled": True, "message": "Install cancelled"}
             line = line.strip()
             if not line:
                 continue
@@ -1354,6 +1652,11 @@ def run_install_command(job_id, command, index, total_items, item_id):
     except Exception as exc:
         process.kill()
         return {"ok": False, "message": str(exc)}
+    finally:
+        unregister_job_process(job_id, process)
+
+    if job_status(job_id) == "cancelled":
+        return {"ok": False, "cancelled": True, "message": "Install cancelled"}
 
     messages = []
     installed_filename = ""
@@ -1378,6 +1681,45 @@ def run_install_command(job_id, command, index, total_items, item_id):
     return {"ok": code == 0, "message": "\n".join(part for part in messages if part) or "Install finished", "filename": installed_filename}
 
 
+def cleanup_job_temp(job_id):
+    if not JOB_ID_RE.match(job_id):
+        return
+    run_cmd(
+        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "cleanup-job-temp", job_id],
+        timeout=20,
+    )
+
+
+def cancel_job(job_id):
+    if not JOB_ID_RE.match(job_id):
+        return {"ok": False, "message": "Invalid job id"}
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return {"ok": False, "message": "Job not found"}
+        if job.get("status") not in {"queued", "running"}:
+            return {"ok": False, "message": "Only queued or running jobs can be cancelled"}
+        job.update(
+            {
+                "status": "cancelled",
+                "stage": "cancelled",
+                "message": "Cancel requested. Temporary download files will be cleaned up; already installed earlier package parts are kept.",
+                "finished_at": int(time.time()),
+            }
+        )
+        persist_job(job)
+    process = current_job_process(job_id)
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    cleanup_job_temp(job_id)
+    return {"ok": True, "message": "Install job cancelled"}
+
+
 def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="", catalog_id=""):
     total_items = len(item_ids)
     if total_items < 1:
@@ -1385,12 +1727,25 @@ def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="",
         return
     messages = []
     for index, current_id in enumerate(item_ids, 1):
+        if job_status(job_id) == "cancelled":
+            cleanup_job_temp(job_id)
+            return
         command = install_command(source, kind, current_id)
         if not command:
             update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
             return
         result = run_install_command(job_id, command, index, total_items, current_id)
         messages.append(result["message"])
+        if result.get("cancelled") or job_status(job_id) == "cancelled":
+            cleanup_job_temp(job_id)
+            update_job(
+                job_id,
+                status="cancelled",
+                stage="cancelled",
+                message="Install cancelled. Already installed earlier package parts were kept.",
+                finished_at=int(time.time()),
+            )
+            return
         if not result["ok"]:
             update_job(
                 job_id,
@@ -1592,6 +1947,1010 @@ def reinstall_map_package(filename):
     )
 
 
+def registry_record_by_filename(filename):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        return None
+    for addon in list_addons():
+        if addon["filename"] == filename:
+            return addon
+    return None
+
+
+def manifest_item_from_record(record):
+    item_id = str(record.get("catalog_id") or "")
+    install_ids = [str(value) for value in (record.get("install_ids") or [])]
+    if not install_ids:
+        install_ids = [item_id] if item_id else []
+    return {
+        "kind": record.get("kind") or "map",
+        "source": "workshop",
+        "id": item_id,
+        "install_ids": install_ids,
+        "title": record.get("title") or record.get("filename", ""),
+        "url": STEAM_WORKSHOP_URL.format(id=item_id),
+        "filename": record.get("filename", ""),
+        "state": record.get("state", ""),
+        "maps": record.get("maps", []),
+        "missions": record.get("missions", []),
+    }
+
+
+def create_manifest(filenames):
+    unique = []
+    for filename in filenames:
+        if filename not in unique:
+            unique.append(filename)
+    if not unique:
+        return {"ok": False, "message": "No addons selected"}
+    items = []
+    skipped = []
+    for filename in unique:
+        if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+            return {"ok": False, "message": "Invalid addon filename"}
+        record = registry_record_by_filename(filename)
+        if not record:
+            skipped.append({"filename": filename, "reason": "record not found"})
+            continue
+        kind = record.get("kind")
+        source = record.get("source")
+        item_id = str(record.get("catalog_id") or "")
+        if kind not in {"map", "mod"}:
+            skipped.append({"filename": filename, "reason": "unsupported kind"})
+            continue
+        if source != "workshop" or not WORKSHOP_ID_RE.match(item_id):
+            skipped.append({"filename": filename, "reason": "only Workshop items can be exported as JSON manifest"})
+            continue
+        item = manifest_item_from_record(record)
+        if any(not WORKSHOP_ID_RE.match(value) for value in item["install_ids"]):
+            skipped.append({"filename": filename, "reason": "invalid Workshop install id"})
+            continue
+        items.append(item)
+    manifest = {
+        "format": MANIFEST_FORMAT,
+        "version": 1,
+        "created_at": int(time.time()),
+        "items": items,
+        "skipped": skipped,
+    }
+    return {"ok": True, "message": f"Exported {len(items)} item(s), skipped {len(skipped)}", "manifest": manifest}
+
+
+def safe_manifest_text(value, limit=180):
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def validate_manifest_item(item):
+    if not isinstance(item, dict):
+        return None, "item must be an object"
+    kind = safe_manifest_text(item.get("kind"), 12)
+    if kind not in {"map", "mod"}:
+        return None, "kind must be map or mod"
+    source = safe_manifest_text(item.get("source"), 20)
+    if source != "workshop":
+        return None, "only Workshop items are supported"
+    item_id = safe_manifest_text(item.get("id"), 24)
+    if not WORKSHOP_ID_RE.match(item_id):
+        return None, "Workshop id must be numeric"
+    filename = Path(safe_manifest_text(item.get("filename"), 180)).name
+    if not filename:
+        filename = f"{kind}_{item_id}_{safe_manifest_text(item.get('title'), 60) or 'workshop_item'}.vpk"
+        filename = re.sub(r"[^A-Za-z0-9_. -]+", "_", filename)
+    if not ADDON_RE.match(filename):
+        return None, "invalid filename"
+    install_ids = [str(value).strip() for value in item.get("install_ids") or [] if str(value).strip()]
+    if not install_ids:
+        install_ids = [item_id]
+    if any(not WORKSHOP_ID_RE.match(value) for value in install_ids):
+        return None, "install_ids must be numeric"
+    if kind == "mod" and item_id not in install_ids:
+        install_ids = [item_id]
+    maps = [safe_manifest_text(value, 80) for value in item.get("maps") or [] if safe_manifest_text(value, 80)]
+    missions = [safe_manifest_text(value, 80) for value in item.get("missions") or [] if safe_manifest_text(value, 80)]
+    record = {
+        "filename": filename,
+        "kind": kind,
+        "source": "workshop",
+        "id": item_id,
+        "title": safe_manifest_text(item.get("title"), 180) or filename,
+        "url": STEAM_WORKSHOP_URL.format(id=item_id),
+        "install_ids": install_ids,
+        "maps": maps,
+        "missions": missions,
+        "status": "remote",
+        "imported_at": int(time.time()),
+    }
+    return record, ""
+
+
+def import_manifest_data(manifest):
+    if not isinstance(manifest, dict):
+        return {"ok": False, "message": "Manifest must be a JSON object"}
+    if manifest.get("format") != MANIFEST_FORMAT or manifest.get("version") != 1:
+        return {"ok": False, "message": "Unsupported manifest format or version"}
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        return {"ok": False, "message": "Manifest items must be a list"}
+    if len(items) > 200:
+        return {"ok": False, "message": "Manifest contains too many items"}
+    packages = read_package_registry()
+    imported = {"map": 0, "mod": 0}
+    skipped = []
+    for item in items:
+        record, reason = validate_manifest_item(item)
+        if not record:
+            skipped.append({"filename": str(item.get("filename", "")) if isinstance(item, dict) else "", "reason": reason})
+            continue
+        filename = record["filename"]
+        existing_file = addon_file_path(filename)
+        existing_record = packages.get(filename, {})
+        if existing_file or existing_record.get("status") == "installed":
+            record["status"] = "installed"
+            record["installed_at"] = existing_record.get("installed_at", int(time.time()))
+        packages[filename] = {**existing_record, **record}
+        imported[record["kind"]] += 1
+    write_package_registry(packages)
+    return {
+        "ok": True,
+        "message": f"Imported {imported['map']} map(s), {imported['mod']} mod(s); skipped {len(skipped)}",
+        "imported": imported,
+        "skipped": skipped,
+    }
+
+
+def install_manifest_records(filenames):
+    unique = []
+    for filename in filenames:
+        if filename not in unique:
+            unique.append(filename)
+    if not unique:
+        return {"ok": False, "message": "No manifest records selected"}
+    packages = read_package_registry()
+    jobs = []
+    for filename in unique:
+        if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+            return {"ok": False, "message": "Invalid addon filename"}
+        record = packages.get(filename)
+        if not record:
+            return {"ok": False, "message": f"Manifest record not found: {filename}"}
+        if record.get("source") != "workshop" or not WORKSHOP_ID_RE.match(str(record.get("id", ""))):
+            return {"ok": False, "message": f"Record is not installable: {filename}"}
+        kind = record.get("kind")
+        if kind not in {"map", "mod"}:
+            return {"ok": False, "message": f"Unsupported record kind: {filename}"}
+        install_ids = [str(value) for value in record.get("install_ids", [])] or [str(record["id"])]
+        if any(not WORKSHOP_ID_RE.match(value) for value in install_ids):
+            return {"ok": False, "message": f"Invalid install ids: {filename}"}
+        result = create_catalog_install_job(
+            "workshop",
+            kind,
+            str(record["id"]),
+            record.get("title", filename),
+            record.get("url", ""),
+            install_ids,
+        )
+        if not result["ok"]:
+            return result
+        jobs.append(result["job"])
+    return {"ok": True, "message": f"Queued {len(jobs)} install job(s)", "jobs": jobs}
+
+
+def remove_manifest_record(filename):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        return {"ok": False, "message": "Invalid addon filename"}
+    if addon_file_path(filename):
+        return {"ok": False, "message": "Addon file exists; remove or disable the file instead of deleting only the record"}
+    packages = read_package_registry()
+    record = packages.get(filename)
+    if not record:
+        return {"ok": False, "message": "Record not found"}
+    if record.get("status") not in {"remote", "not_installed", "deleted"}:
+        return {"ok": False, "message": "Only remote/deleted records can be removed"}
+    packages.pop(filename, None)
+    write_package_registry(packages)
+    return {"ok": True, "message": f"Removed record {filename}"}
+
+
+def addon_file_path(filename):
+    if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+        return None
+    for root in (ADDONS_DIR, DISABLED_ADDONS_DIR):
+        path = root / filename
+        if path.is_file():
+            return path
+    return None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def assert_vpk_signature(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(4) == b"\x34\x12\xaa\x55"
+    except OSError:
+        return False
+
+
+def collect_export_packages(filenames):
+    unique = []
+    for filename in filenames:
+        if filename not in unique:
+            unique.append(filename)
+    if not unique:
+        return {"ok": False, "message": "No packages selected"}
+    packages = read_package_registry()
+    manifest_packages = []
+    registry_subset = {}
+    export_paths = []
+    for filename in unique:
+        if not ADDON_RE.match(filename) or "/" in filename or "\\" in filename:
+            return {"ok": False, "message": "Invalid package filename"}
+        package = package_by_filename(filename)
+        if not package or package.get("kind") != "map" or package.get("state") == "deleted":
+            return {"ok": False, "message": f"Map package is not installed: {filename}"}
+        path = addon_file_path(filename)
+        if not path:
+            return {"ok": False, "message": f"VPK file not found: {filename}"}
+        manifest_packages.append(
+            {
+                "filename": filename,
+                "state": package.get("state", ""),
+                "source": package.get("source", ""),
+                "id": package.get("catalog_id", ""),
+                "url": package.get("url", ""),
+                "install_ids": package.get("install_ids", []),
+                "maps": package.get("maps", []),
+                "missions": package.get("missions", []),
+                "size": path.stat().st_size,
+                "sha256": "",
+            }
+        )
+        registry_subset[filename] = packages.get(filename) or {
+            "filename": filename,
+            "title": package.get("title", filename),
+            "source": package.get("source", ""),
+            "id": package.get("catalog_id", ""),
+            "url": package.get("url", ""),
+            "install_ids": package.get("install_ids", []),
+            "maps": package.get("maps", []),
+            "missions": package.get("missions", []),
+            "status": "installed",
+        }
+        export_paths.append((filename, path))
+    return {
+        "ok": True,
+        "manifest_packages": manifest_packages,
+        "registry_subset": registry_subset,
+        "export_paths": export_paths,
+    }
+
+
+def mem_available_bytes():
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, IndexError, ValueError):
+        return None
+    return None
+
+
+def active_export_filenames():
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        return {
+            job.get("export_filename", "")
+            for job in JOBS.values()
+            if job.get("type") == "export" and job.get("status") in {"queued", "running", "succeeded"}
+        }
+
+
+def prune_old_exports():
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        paths = list(EXPORTS_DIR.glob("l4d2-map-packages-*.zip"))
+    except OSError:
+        return
+    cutoff = time.time() - EXPORT_RETENTION_SECONDS
+    protected = active_export_filenames()
+    for path in paths:
+        try:
+            if path.name in protected and path.stat().st_mtime >= cutoff:
+                continue
+            if path.stat().st_mtime < cutoff:
+                size = path.stat().st_size
+                path.unlink()
+                log_event("export_pruned", filename=path.name, bytes=size)
+        except OSError as exc:
+            log_event("export_prune_failed", filename=path.name, message=str(exc))
+
+
+def check_export_capacity(required_bytes):
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(EXPORTS_DIR).free
+    except OSError as exc:
+        return {"ok": False, "message": f"Cannot inspect export directory: {exc}"}
+    required_free = max(EXPORT_MIN_FREE_BYTES, required_bytes + 256 * 1024 * 1024)
+    if free_bytes < required_free:
+        return {
+            "ok": False,
+            "message": (
+                "Not enough disk space for export: "
+                f"free {free_bytes // (1024 * 1024)} MB, "
+                f"need {required_free // (1024 * 1024)} MB"
+            ),
+        }
+    available_memory = mem_available_bytes()
+    if available_memory is not None and available_memory < EXPORT_MIN_MEMORY_BYTES:
+        return {
+            "ok": False,
+            "message": (
+                "Not enough available memory for export: "
+                f"available {available_memory // (1024 * 1024)} MB, "
+                f"need {EXPORT_MIN_MEMORY_BYTES // (1024 * 1024)} MB"
+            ),
+        }
+    return {"ok": True}
+
+
+def export_map_packages(filenames):
+    collected = collect_export_packages(filenames)
+    if not collected["ok"]:
+        return collected
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        export_name = f"l4d2-map-packages-{uuid.uuid4().hex[:12]}.zip"
+        export_path = EXPORTS_DIR / export_name
+        for item, (_, path) in zip(collected["manifest_packages"], collected["export_paths"]):
+            item["sha256"] = sha256_file(path)
+        manifest = {
+            "format": "l4d2-manager-web-export",
+            "version": 1,
+            "created_at": int(time.time()),
+            "packages": collected["manifest_packages"],
+        }
+        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            archive.writestr("packages.json", json.dumps({"packages": collected["registry_subset"]}, ensure_ascii=False, indent=2))
+            for filename, path in collected["export_paths"]:
+                archive.write(path, f"addons/{filename}")
+        return {"ok": True, "path": export_path, "filename": export_name}
+    except OSError as exc:
+        return {"ok": False, "message": str(exc)}
+
+
+def send_zip_file(handler, path, download_name):
+    try:
+        size = path.stat().st_size
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        handler.send_header("Content-Length", str(size))
+        handler.end_headers()
+        with open(path, "rb") as handle:
+            shutil.copyfileobj(handle, handler.wfile)
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def stream_zip_file(handler, path, download_name, job_id=""):
+    size = path.stat().st_size
+    start = time.time()
+    log_event("export_download_start", job_id=job_id, filename=download_name, bytes=size)
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/zip")
+    handler.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+    handler.send_header("Content-Length", str(size))
+    handler.end_headers()
+    with open(path, "rb") as handle:
+        shutil.copyfileobj(handle, handler.wfile)
+    log_event(
+        "export_download_finished",
+        job_id=job_id,
+        filename=download_name,
+        bytes=size,
+        duration_ms=int((time.time() - start) * 1000),
+    )
+
+
+def create_export_job(filenames):
+    collected = collect_export_packages(filenames)
+    if not collected["ok"]:
+        return collected
+    total_bytes = sum(path.stat().st_size for _, path in collected["export_paths"])
+    prune_old_exports()
+    capacity = check_export_capacity(total_bytes)
+    if not capacity["ok"]:
+        log_event("export_rejected", bytes=total_bytes, message=capacity["message"])
+        return capacity
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": job_id,
+        "type": "export",
+        "source": "local",
+        "kind": "map",
+        "catalog_id": "",
+        "install_ids": [],
+        "title": f"Export {len(collected['export_paths'])} map package(s)",
+        "url": "",
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "downloaded_bytes": 0,
+        "total_bytes": total_bytes,
+        "current_item": "",
+        "items_done": 0,
+        "items_total": len(collected["export_paths"]),
+        "message": "Export queued",
+        "created_at": int(time.time()),
+        "finished_at": None,
+        "download_url": "",
+        "export_filename": "",
+    }
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+        persist_job(job)
+    thread = threading.Thread(target=run_export_job, args=(job_id, collected), daemon=True)
+    thread.start()
+    return {"ok": True, "message": "Export queued", "job": job}
+
+
+def run_export_job(job_id, collected):
+    start = time.time()
+    export_name = f"l4d2-map-packages-{job_id}.zip"
+    export_path = EXPORTS_DIR / export_name
+    total_bytes = sum(path.stat().st_size for _, path in collected["export_paths"])
+    log_event("export_started", job_id=job_id, filename=export_name, bytes=total_bytes)
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        capacity = check_export_capacity(total_bytes)
+        if not capacity["ok"]:
+            raise RuntimeError(capacity["message"])
+        manifest_packages = collected["manifest_packages"]
+        export_paths = collected["export_paths"]
+        total_items = max(1, len(export_paths))
+        for index, (manifest_item, (filename, path)) in enumerate(zip(manifest_packages, export_paths), 1):
+            update_job(
+                job_id,
+                status="running",
+                stage="hashing",
+                current_item=filename,
+                items_done=index - 1,
+                progress=int(((index - 1) / total_items) * 45),
+                message=f"Hashing {filename}",
+            )
+            log_event("export_hashing", job_id=job_id, stage="hashing", filename=filename, bytes=path.stat().st_size)
+            manifest_item["sha256"] = sha256_file(path)
+        manifest = {
+            "format": "l4d2-manager-web-export",
+            "version": 1,
+            "created_at": int(time.time()),
+            "packages": manifest_packages,
+        }
+        update_job(job_id, stage="packing", progress=50, message="Writing export ZIP")
+        log_event("export_packing", job_id=job_id, stage="packing", filename=export_name)
+        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            archive.writestr("packages.json", json.dumps({"packages": collected["registry_subset"]}, ensure_ascii=False, indent=2))
+            for index, (filename, path) in enumerate(export_paths, 1):
+                update_job(
+                    job_id,
+                    stage="packing",
+                    current_item=filename,
+                    items_done=index - 1,
+                    progress=50 + int(((index - 1) / total_items) * 45),
+                    message=f"Packing {filename}",
+                )
+                archive.write(path, f"addons/{filename}")
+        size = export_path.stat().st_size
+        update_job(
+            job_id,
+            status="succeeded",
+            stage="ready",
+            progress=100,
+            current_item="",
+            items_done=len(export_paths),
+            message=f"Export ready: {export_name}",
+            download_url=f"/api/export/download?job_id={job_id}",
+            export_filename=export_name,
+            finished_at=int(time.time()),
+        )
+        log_event("export_finished", job_id=job_id, stage="ready", filename=export_name, bytes=size, duration_ms=int((time.time() - start) * 1000))
+    except Exception as exc:
+        update_job(job_id, status="failed", stage="failed", message=str(exc)[-2000:], finished_at=int(time.time()))
+        log_event("export_failed", job_id=job_id, stage="failed", filename=export_name, message=str(exc), duration_ms=int((time.time() - start) * 1000))
+
+
+def export_download_for_job(job_id):
+    if not JOB_ID_RE.match(job_id):
+        return {"ok": False, "message": "Invalid job id"}
+    job = get_job(job_id)
+    if not job:
+        return {"ok": False, "message": "Export job not found"}
+    if job.get("type") != "export" or job.get("status") != "succeeded" or job.get("stage") != "ready":
+        return {"ok": False, "message": "Export is not ready"}
+    filename = job.get("export_filename", "")
+    if not re.match(r"^l4d2-map-packages-[a-f0-9]{12}\.zip$", filename):
+        return {"ok": False, "message": "Invalid export filename"}
+    path = (EXPORTS_DIR / filename).resolve()
+    try:
+        exports_root = EXPORTS_DIR.resolve()
+    except OSError:
+        return {"ok": False, "message": "Export directory is missing"}
+    if exports_root not in path.parents or not path.is_file():
+        return {"ok": False, "message": "Export file is missing"}
+    return {"ok": True, "path": path, "filename": filename, "job_id": job_id}
+
+
+def safe_upload_final_name(filename, suffix):
+    name = Path(filename or "").name
+    if suffix == ".vpk":
+        candidate = re.sub(r"[^A-Za-z0-9_. -]+", "_", name)
+        if not candidate.lower().endswith(".vpk"):
+            candidate = f"{Path(candidate).stem or 'uploaded'}.vpk"
+        return candidate if ADDON_RE.match(candidate) else f"uploaded_{uuid.uuid4().hex[:8]}.vpk"
+    return f"upload_{uuid.uuid4().hex[:12]}.zip"
+
+
+def create_transfer_job(kind, upload_type, staged_filename, final_filename="", metadata=None):
+    if upload_type not in {"vpk", "zip"}:
+        return {"ok": False, "message": "Invalid upload type"}
+    if upload_type == "vpk" and kind not in {"map", "mod"}:
+        return {"ok": False, "message": "Kind must be map or mod"}
+    if not STAGED_UPLOAD_RE.match(staged_filename):
+        return {"ok": False, "message": "Invalid staged upload filename"}
+    if final_filename and not ADDON_RE.match(final_filename):
+        return {"ok": False, "message": "Invalid final filename"}
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": job_id,
+        "source": "upload",
+        "kind": kind or "map",
+        "catalog_id": "",
+        "install_ids": [],
+        "title": final_filename or staged_filename,
+        "url": "",
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "current_item": staged_filename,
+        "items_done": 0,
+        "items_total": 1,
+        "message": "Upload received; import queued",
+        "created_at": int(time.time()),
+        "finished_at": None,
+        "upload_type": upload_type,
+        "staged_filename": staged_filename,
+        "final_filename": final_filename,
+        "metadata": metadata or {},
+    }
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+        persist_job(job)
+    thread = threading.Thread(target=run_transfer_job, args=(job_id,), daemon=True)
+    thread.start()
+    return {"ok": True, "message": "Import queued", "job": job}
+
+
+def run_job_command(job_id, command, env_extra=None):
+    update_job(job_id, status="running", stage="importing", progress=5, message="Import started")
+    lines = []
+    try:
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        register_job_process(job_id, process)
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            if job_status(job_id) == "cancelled":
+                process.terminate()
+                return {"ok": False, "cancelled": True, "message": "Import cancelled"}
+            line = line.strip()
+            if not line:
+                continue
+            lines.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                update_job(job_id, message=line[-2000:])
+                continue
+            if event.get("event") == "stage":
+                update_job(job_id, stage=event.get("stage") or "", message=event.get("message") or "", progress=50)
+            elif event.get("event") == "message":
+                update_job(job_id, message=event.get("message") or "")
+        stderr = process.stderr.read() if process.stderr else ""
+        code = process.wait(timeout=1800)
+    except Exception as exc:
+        process.kill()
+        return {"ok": False, "message": str(exc)}
+    finally:
+        unregister_job_process(job_id, process)
+    if job_status(job_id) == "cancelled":
+        return {"ok": False, "cancelled": True, "message": "Import cancelled"}
+    message = "\n".join(lines[-8:])
+    if stderr:
+        message = (message + "\n" + stderr.strip()).strip()
+    return {"ok": code == 0, "message": message or "Import finished"}
+
+
+def merge_imported_packages_from_zip(staged_path):
+    try:
+        with zipfile.ZipFile(staged_path) as archive:
+            package_data = json.loads(archive.read("packages.json").decode("utf-8"))
+    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
+        return
+    incoming = package_data.get("packages", {}) if isinstance(package_data, dict) else {}
+    if not isinstance(incoming, dict):
+        return
+    packages = read_package_registry()
+    for filename, record in incoming.items():
+        if ADDON_RE.match(filename) and isinstance(record, dict):
+            record = dict(record)
+            record.update({"filename": filename, "status": "installed", "installed_at": int(time.time())})
+            packages[filename] = record
+    write_package_registry(packages)
+
+
+def run_transfer_job(job_id):
+    with JOBS_LOCK:
+        job = dict(JOBS.get(job_id) or {})
+    staged_filename = job.get("staged_filename", "")
+    staged_path = UPLOADS_DIR / staged_filename
+    if job_status(job_id) == "cancelled":
+        return
+    if not staged_path.is_file():
+        update_job(job_id, status="failed", stage="failed", message="Staged upload is missing", finished_at=int(time.time()))
+        return
+    if job.get("upload_type") == "vpk":
+        command = [
+            "/usr/bin/sudo",
+            "-n",
+            "/usr/local/bin/l4d2-webctl",
+            "import-vpk",
+            job.get("kind", "map"),
+            staged_filename,
+            job.get("final_filename", ""),
+        ]
+    else:
+        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "import-export-zip", staged_filename]
+    result = run_job_command(job_id, command, {"L4D2_WEB_JOB_ID": job_id})
+    if result.get("cancelled"):
+        update_job(job_id, status="cancelled", stage="cancelled", message="Import cancelled", finished_at=int(time.time()))
+        return
+    if not result["ok"]:
+        update_job(job_id, status="failed", stage="failed", message=result["message"][-2000:], finished_at=int(time.time()))
+        return
+    if job.get("upload_type") == "vpk":
+        register_installed_package(
+            job.get("final_filename", ""),
+            "upload",
+            job.get("kind", "map"),
+            "",
+            Path(job.get("final_filename", "")).stem,
+            "",
+            [],
+        )
+    else:
+        merge_imported_packages_from_zip(staged_path)
+    try:
+        staged_path.unlink()
+    except OSError:
+        pass
+    update_job(
+        job_id,
+        status="succeeded",
+        stage="finished",
+        progress=100,
+        message=result["message"][-2000:] or "Import finished",
+        finished_at=int(time.time()),
+    )
+
+
+def create_upload_job(kind, field):
+    original = Path(field.filename or "").name
+    suffix = Path(original).suffix.lower()
+    if suffix not in {".vpk", ".zip"}:
+        return {"ok": False, "message": "Upload must be a .vpk or an exported .zip"}
+    upload_type = suffix.lstrip(".")
+    final_filename = safe_upload_final_name(original, suffix) if upload_type == "vpk" else ""
+    if final_filename and addon_file_path(final_filename):
+        return {"ok": False, "message": f"Target already exists: {final_filename}"}
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    staged_filename = f"upload_{uuid.uuid4().hex[:12]}_{uuid.uuid4().hex[:12]}{suffix}"
+    staged_path = UPLOADS_DIR / staged_filename
+    size = 0
+    try:
+        with open(staged_path, "wb") as handle:
+            while True:
+                chunk = field.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    handle.close()
+                    staged_path.unlink(missing_ok=True)
+                    return {"ok": False, "message": "Upload is too large"}
+                handle.write(chunk)
+    except OSError as exc:
+        return {"ok": False, "message": str(exc)}
+    if upload_type == "vpk" and not assert_vpk_signature(staged_path):
+        staged_path.unlink(missing_ok=True)
+        return {"ok": False, "message": "Uploaded file is not a VPK"}
+    if upload_type == "zip":
+        validation = validate_export_zip(staged_path)
+        if not validation["ok"]:
+            staged_path.unlink(missing_ok=True)
+            return validation
+    return create_transfer_job(kind, upload_type, staged_filename, final_filename)
+
+
+def validate_export_zip(path):
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if "manifest.json" not in names or "packages.json" not in names:
+                return {"ok": False, "message": "ZIP must be an L4D2 manager export"}
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if manifest.get("format") != "l4d2-manager-web-export":
+                return {"ok": False, "message": "Unsupported export manifest"}
+            addon_names = [name for name in names if name.startswith("addons/")]
+            if not addon_names:
+                return {"ok": False, "message": "Export ZIP does not contain VPK files"}
+            for name in names:
+                normalized = name.replace("\\", "/")
+                if normalized.startswith("/") or ".." in Path(normalized).parts:
+                    return {"ok": False, "message": "ZIP contains unsafe paths"}
+                if normalized.endswith("/"):
+                    continue
+                if normalized not in {"manifest.json", "packages.json"} and not normalized.startswith("addons/"):
+                    return {"ok": False, "message": "ZIP contains unsupported files"}
+                if normalized.startswith("addons/") and not ADDON_RE.match(Path(normalized).name):
+                    return {"ok": False, "message": "ZIP contains invalid VPK filename"}
+    except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        return {"ok": False, "message": f"Invalid export ZIP: {exc}"}
+    return {"ok": True, "message": "ZIP is valid"}
+
+
+def handle_upload_request(handler):
+    content_length = int(handler.headers.get("Content-Length", "0") or 0)
+    if content_length <= 0:
+        handler.send_json(400, {"ok": False, "message": "Upload body is empty"})
+        return
+    if content_length > MAX_UPLOAD_BYTES + 1024 * 1024:
+        handler.send_json(400, {"ok": False, "message": "Upload is too large"})
+        return
+    content_type = handler.headers.get("Content-Type", "")
+    if "multipart/form-data" not in content_type:
+        handler.send_json(400, {"ok": False, "message": "Upload must use multipart/form-data"})
+        return
+    form = cgi.FieldStorage(
+        fp=handler.rfile,
+        headers=handler.headers,
+        environ={
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": content_type,
+            "CONTENT_LENGTH": str(content_length),
+        },
+    )
+    file_field = form["file"] if "file" in form else None
+    if isinstance(file_field, list):
+        file_field = file_field[0] if file_field else None
+    if file_field is None or not getattr(file_field, "filename", ""):
+        handler.send_json(400, {"ok": False, "message": "Missing upload file"})
+        return
+    kind = form.getfirst("kind", "map")
+    result = create_upload_job(kind, file_field)
+    handler.send_json(200 if result["ok"] else 400, result)
+
+
+def handle_manifest_import_request(handler):
+    content_length = int(handler.headers.get("Content-Length", "0") or 0)
+    if content_length <= 0:
+        handler.send_json(400, {"ok": False, "message": "Manifest upload body is empty"})
+        return
+    if content_length > MAX_MANIFEST_BYTES + 1024 * 64:
+        handler.send_json(400, {"ok": False, "message": "Manifest upload is too large"})
+        return
+    content_type = handler.headers.get("Content-Type", "")
+    try:
+        if "multipart/form-data" in content_type:
+            form = cgi.FieldStorage(
+                fp=handler.rfile,
+                headers=handler.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": str(content_length),
+                },
+            )
+            file_field = form["file"] if "file" in form else None
+            if isinstance(file_field, list):
+                file_field = file_field[0] if file_field else None
+            if file_field is None or not getattr(file_field, "filename", ""):
+                handler.send_json(400, {"ok": False, "message": "Missing manifest file"})
+                return
+            if Path(file_field.filename).suffix.lower() != ".json":
+                handler.send_json(400, {"ok": False, "message": "Manifest must be a .json file"})
+                return
+            payload = file_field.file.read(MAX_MANIFEST_BYTES + 1)
+        else:
+            payload = handler.rfile.read(content_length)
+        if len(payload) > MAX_MANIFEST_BYTES:
+            handler.send_json(400, {"ok": False, "message": "Manifest upload is too large"})
+            return
+        manifest = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        handler.send_json(400, {"ok": False, "message": f"Invalid manifest JSON: {exc}"})
+        return
+    result = import_manifest_data(manifest)
+    handler.send_json(200 if result["ok"] else 400, result)
+
+
+def check_credentials(username, password):
+    return hmac.compare_digest(str(username or ""), ADMIN_USER) and hmac.compare_digest(str(password or ""), ADMIN_PASSWORD)
+
+
+def prune_sessions():
+    now = time.time()
+    with SESSIONS_LOCK:
+        expired = [token for token, data in SESSIONS.items() if data.get("expires_at", 0) <= now]
+        for token in expired:
+            SESSIONS.pop(token, None)
+
+
+def create_session(username):
+    prune_sessions()
+    token = secrets.token_urlsafe(32)
+    with SESSIONS_LOCK:
+        SESSIONS[token] = {
+            "username": username,
+            "created_at": int(time.time()),
+            "expires_at": time.time() + SESSION_TTL_SECONDS,
+        }
+    return token
+
+
+def session_from_cookie(header):
+    if not header:
+        return None
+    jar = cookies.SimpleCookie()
+    try:
+        jar.load(header)
+    except cookies.CookieError:
+        return None
+    morsel = jar.get("l4d2web_session")
+    if not morsel:
+        return None
+    token = morsel.value
+    prune_sessions()
+    with SESSIONS_LOCK:
+        data = SESSIONS.get(token)
+        if not data:
+            return None
+        if data.get("expires_at", 0) <= time.time():
+            SESSIONS.pop(token, None)
+            return None
+        return token
+
+
+def destroy_session(token):
+    if not token:
+        return
+    with SESSIONS_LOCK:
+        SESSIONS.pop(token, None)
+
+
+def session_cookie_header(token, max_age=SESSION_TTL_SECONDS):
+    parts = [
+        f"l4d2web_session={token}",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Lax",
+        f"Max-Age={max_age}",
+    ]
+    if SESSION_COOKIE_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def render_login_page(message=""):
+    safe_message = html.escape(message or "")
+    message_html = f'<div id="message" class="message">{safe_message}</div>' if safe_message else '<div id="message" class="message"></div>'
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>L4D2 Manager Login</title>
+  <style>
+    :root {{ color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7f7f4; color: #202322; }}
+    main {{ width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9ded8; border-radius: 8px; padding: 24px; }}
+    h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: 0; }}
+    p {{ margin: 0 0 20px; color: #68706a; }}
+    label {{ display: grid; gap: 6px; margin-top: 14px; font-weight: 650; }}
+    input {{ height: 38px; border: 1px solid #b8c1ba; border-radius: 7px; padding: 0 10px; font: inherit; }}
+    button {{ margin-top: 18px; width: 100%; height: 40px; border: 1px solid #25362d; border-radius: 7px; background: #25362d; color: #fff; font: inherit; cursor: pointer; }}
+    button:disabled {{ opacity: .6; cursor: wait; }}
+    .message {{ min-height: 20px; margin-top: 14px; color: #9c3b37; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>L4D2 Server Manager</h1>
+    <p>Sign in to manage rooms, maps, mods, and server health.</p>
+    <form id="login-form">
+      <label>Username <input id="username" name="username" autocomplete="username" required autofocus></label>
+      <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required></label>
+      <button id="submit" type="submit">Sign In</button>
+    </form>
+    {message_html}
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const messageEl = document.querySelector("#message");
+    if (params.get("expired") === "1") {{
+      messageEl.textContent = "Your session expired. Sign in again.";
+    }}
+    document.querySelector("#login-form").addEventListener("submit", async event => {{
+      event.preventDefault();
+      const button = document.querySelector("#submit");
+      button.disabled = true;
+      messageEl.textContent = "Signing in...";
+      const body = new URLSearchParams({{
+        username: document.querySelector("#username").value,
+        password: document.querySelector("#password").value
+      }});
+      try {{
+        const res = await fetch("/api/login", {{
+          method: "POST",
+          headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
+          body
+        }});
+        const data = await res.json();
+        if (!res.ok) {{
+          messageEl.textContent = data.message || "Sign in failed";
+          return;
+        }}
+        location.href = "/";
+      }} catch (err) {{
+        messageEl.textContent = err.message || "Sign in failed";
+      }} finally {{
+        button.disabled = false;
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+
+
 def render_page():
     return """<!doctype html>
 <html lang="en">
@@ -1602,7 +2961,7 @@ def render_page():
   <style>
     :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f7f7f4; color: #202322; }
-    header { padding: 20px 24px 12px; border-bottom: 1px solid #d9ded8; background: #ffffff; }
+    header { padding: 18px 24px 12px; border-bottom: 1px solid #d9ded8; background: #ffffff; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px; }
     .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
@@ -1623,6 +2982,8 @@ def render_page():
     .primary-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     .field { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     input { height: 34px; min-width: 180px; border: 1px solid #b8c1ba; border-radius: 7px; background: #fff; padding: 0 9px; }
+    input[type="checkbox"] { height: auto; min-width: 0; padding: 0; }
+    input[type="file"] { padding: 5px 9px; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
     .catalog-results { display: grid; gap: 10px; margin-top: 12px; }
     .catalog-item { border-top: 1px solid #e4e7e3; padding-top: 10px; display: grid; gap: 8px; }
@@ -1651,23 +3012,39 @@ def render_page():
     .job { padding: 8px 0; border-top: 1px solid #e4e7e3; font-size: 13px; }
     .progress-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
     progress { width: min(360px, 100%); height: 14px; accent-color: #25362d; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px; }
+    .metric { border: 1px solid #e4e7e3; border-radius: 7px; padding: 10px; display: grid; gap: 6px; min-width: 0; }
+    .metric.warn { border-color: #d7a844; background: #fff9ea; }
+    .metric.danger { border-color: #b85c57; background: #fff0ef; }
+    .metric-label { color: #68706a; font-size: 12px; }
+    .metric-value { font-weight: 700; overflow-wrap: anywhere; }
+    .bar { height: 8px; border-radius: 999px; background: #e8ece8; overflow: hidden; }
+    .bar span { display: block; height: 100%; background: #25362d; width: 0; }
+    .metric.warn .bar span { background: #b8841c; }
+    .metric.danger .bar span { background: #9c3b37; }
+    .process-grid { display: grid; gap: 8px; margin-top: 12px; }
+    .process-row { display: grid; grid-template-columns: minmax(120px, 1fr) 88px minmax(80px, auto) minmax(80px, auto); gap: 8px; align-items: center; font-size: 13px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
     .muted { color: #68706a; font-size: 13px; }
     #notice { min-height: 20px; }
     @media (max-width: 760px) {
       .split-panel { grid-template-columns: 1fr; }
-      .package-row, .row { grid-template-columns: 1fr; }
+      .package-row, .row, .process-row { grid-template-columns: 1fr; }
       .package-actions { justify-content: flex-start; }
     }
   </style>
 </head>
 <body>
-  <header><h1>L4D2 Server Manager</h1></header>
+  <header>
+    <h1>L4D2 Server Manager</h1>
+    <button id="logout" class="secondary">Logout</button>
+  </header>
   <main>
     <div class="toolbar">
       <button id="refresh">Refresh</button>
       <span id="notice" class="muted"></span>
     </div>
+    <section id="system" class="card"></section>
     <section id="rooms" class="grid"></section>
     <section class="stack">
       <section class="card">
@@ -1699,9 +3076,31 @@ def render_page():
       <section class="card">
         <div class="room-head">
           <div class="name">Map Packages</div>
-          <span id="map-package-count" class="pill"></span>
+          <div class="actions">
+            <button id="export-selected" class="secondary">Export ZIP Selected</button>
+            <span id="map-package-count" class="pill"></span>
+          </div>
         </div>
         <div id="map-packages" class="rows"></div>
+      </section>
+      <section class="card">
+        <div class="room-head">
+          <div class="name">Transfer</div>
+          <span class="pill">Manifest / VPK / ZIP</span>
+        </div>
+        <div class="field" style="margin-top: 14px">
+          <button id="manifest-export">Export JSON Manifest</button>
+          <input id="manifest-file" type="file" accept=".json,application/json">
+          <button id="manifest-import" class="secondary">Import JSON Manifest</button>
+        </div>
+        <form id="upload-form" class="field" style="margin-top: 14px">
+          <input id="upload-file" name="file" type="file" accept=".vpk,.zip">
+          <select id="upload-kind" name="kind">
+            <option value="map">Map package</option>
+            <option value="mod">Mod</option>
+          </select>
+          <button id="upload-submit" type="submit">Upload & Import</button>
+        </form>
       </section>
       <section class="card">
         <div class="room-head">
@@ -1720,6 +3119,7 @@ def render_page():
     </section>
   </main>
   <script>
+    const systemEl = document.querySelector("#system");
     const roomsEl = document.querySelector("#rooms");
     const mapsEl = document.querySelector("#maps");
     const mapCountEl = document.querySelector("#map-count");
@@ -1730,8 +3130,21 @@ def render_page():
     const jobsEl = document.querySelector("#jobs");
     const catalogResultsEl = document.querySelector("#catalog-results");
     const noticeEl = document.querySelector("#notice");
+    const exportSelectedButton = document.querySelector("#export-selected");
+    const manifestExportButton = document.querySelector("#manifest-export");
+    const manifestImportButton = document.querySelector("#manifest-import");
+    const uploadForm = document.querySelector("#upload-form");
     let currentState = null;
     let refreshTimer = null;
+
+    async function apiFetch(input, init = {}) {
+      const res = await fetch(input, {credentials: "same-origin", ...init});
+      if (res.status === 401) {
+        location.href = "/login?expired=1";
+        throw new Error("Session expired");
+      }
+      return res;
+    }
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -1777,14 +3190,23 @@ def render_page():
         return;
       }
       addonsEl.innerHTML = mods.map(addon => {
+        const remote = addon.state === "remote";
         const target = addon.state === "enabled" ? "disabled" : "enabled";
         const label = addon.state === "enabled" ? "Disable" : "Enable";
         const sizeMb = (addon.size / 1024 / 1024).toFixed(1);
+        const openLink = addon.url ? `<a href="${esc(addon.url)}" target="_blank" rel="noreferrer">Open</a>` : "";
+        const install = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">Install</button>` : "";
+        const remove = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">Remove Record</button>` : "";
+        const stateButton = remote ? "" : `<button data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>`;
+        const sizeText = remote ? "not downloaded" : `${sizeMb} MB`;
         return `<div class="row">
-          <div class="mono">${esc(addon.filename)}</div>
+          <label class="actions" style="gap: 6px">
+            <input type="checkbox" data-manifest-select="${esc(addon.filename)}">
+            <span class="mono">${esc(addon.filename)}</span>
+          </label>
           <div>${addon.state}</div>
-          <div>${sizeMb} MB</div>
-          <button data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>
+          <div>${sizeText}</div>
+          <div class="actions">${openLink}${install}${remove}${stateButton}</div>
         </div>`;
       }).join("");
     }
@@ -1802,30 +3224,40 @@ def render_page():
         const sizeMb = (addon.size / 1024 / 1024).toFixed(1);
         const maps = addon.maps && addon.maps.length ? addon.maps.join(", ") : "mission only";
         const deleted = addon.state === "deleted";
+        const remote = addon.state === "remote";
         const openLink = addon.url ? `<a href="${esc(addon.url)}" target="_blank" rel="noreferrer">Open</a>` : "";
-        const reinstall = addon.reinstallable ? `<button data-package-reinstall="${esc(addon.filename)}">Reinstall</button>` : "";
+        const exportLink = deleted || remote ? "" : `<button class="secondary" data-package-export="${esc(addon.filename)}">Export ZIP</button>`;
+        const reinstall = !remote && addon.reinstallable ? `<button data-package-reinstall="${esc(addon.filename)}">Reinstall</button>` : "";
+        const installRemote = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">Install</button>` : "";
+        const removeRemote = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">Remove Record</button>` : "";
         const disable = deleted ? "" : `<button class="secondary" data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>`;
         const softDelete = deleted ? "" : `<button class="secondary" data-package-delete="${esc(addon.filename)}" data-package-mode="soft">Soft Delete</button>`;
         const purgeDelete = `<button class="danger" data-package-delete="${esc(addon.filename)}" data-package-mode="purge">Purge Delete</button>`;
         const source = addon.source && addon.catalog_id ? `${addon.source} ${addon.catalog_id}` : "local package";
         const title = addon.title && addon.title !== addon.filename ? addon.title : addon.filename;
-        const statusText = deleted ? "deleted" : addon.state;
-        const sizeText = deleted ? "removed" : `${sizeMb} MB`;
-        const moreActions = [disable, softDelete, purgeDelete].filter(Boolean).join("");
+        const statusText = remote ? "remote" : (deleted ? "deleted" : addon.state);
+        const sizeText = remote ? "not downloaded" : (deleted ? "removed" : `${sizeMb} MB`);
+        const moreActions = remote ? "" : [disable, softDelete, purgeDelete].filter(Boolean).join("");
+        const checkbox = deleted || remote
+          ? `<input type="checkbox" data-manifest-select="${esc(addon.filename)}">`
+          : `<input type="checkbox" data-package-select="${esc(addon.filename)}" data-manifest-select="${esc(addon.filename)}">`;
         const moreMenu = moreActions ? `<details class="more-actions">
           <summary>More</summary>
           <div class="menu-actions">${moreActions}</div>
         </details>` : "";
         return `<div class="row package-row">
           <div>
-            <div class="package-title">${esc(title)}</div>
+            <label class="actions" style="gap: 6px">
+              ${checkbox}
+              <span class="package-title">${esc(title)}</span>
+            </label>
             <div class="muted mono">${esc(addon.filename)}</div>
             <div class="muted">${esc(maps)}</div>
             <div class="muted">${esc(source)}</div>
           </div>
           <div>${statusText}</div>
           <div>${sizeText}</div>
-          <div class="actions package-actions">${openLink}${reinstall}${moreMenu}</div>
+          <div class="actions package-actions">${openLink}${exportLink}${installRemote}${removeRemote}${reinstall}${moreMenu}</div>
         </div>`;
       }).join("");
     }
@@ -1837,7 +3269,9 @@ def render_page():
       }
       jobsEl.innerHTML = jobs.map(job => `<div class="job">
         <strong>${esc(job.status)}</strong>
-        <span class="mono">${esc(job.source || "workshop")} ${esc(job.kind)} ${esc(job.catalog_id || job.workshop_id)}</span>
+        <span class="mono">${esc(job.type || job.source || "workshop")} ${esc(job.kind)} ${esc(job.catalog_id || job.workshop_id || job.export_filename || "")}</span>
+        ${job.status === "queued" || job.status === "running" ? `<button class="secondary" data-job-cancel="${esc(job.id)}">Cancel</button>` : ""}
+        ${job.type === "export" && job.status === "succeeded" && job.download_url ? `<a href="${esc(job.download_url)}">Download</a>` : ""}
         ${job.title ? `<div>${esc(job.title)}</div>` : ""}
         ${job.install_ids && job.install_ids.length > 1 ? `<div class="muted mono">packages ${job.install_ids.map(esc).join(", ")}</div>` : ""}
         ${jobProgress(job)}
@@ -1847,7 +3281,7 @@ def render_page():
 
     function formatBytes(value) {
       const size = Number(value || 0);
-      if (!size) return "";
+      if (!size) return "0 B";
       const units = ["B", "KB", "MB", "GB"];
       let current = size;
       let unit = 0;
@@ -1856,6 +3290,90 @@ def render_page():
         unit += 1;
       }
       return unit === 0 ? `${current} ${units[unit]}` : `${current.toFixed(1)} ${units[unit]}`;
+    }
+
+    function formatPercent(value) {
+      if (value === null || value === undefined || value === "") return "unknown";
+      const number = Number(value);
+      return Number.isFinite(number) ? `${number.toFixed(1)}%` : "unknown";
+    }
+
+    function riskClass(percent, warn, danger) {
+      if (percent === null || percent === undefined || percent === "") return "";
+      const value = Number(percent);
+      if (!Number.isFinite(value)) return "";
+      if (value >= danger) return "danger";
+      if (value >= warn) return "warn";
+      return "";
+    }
+
+    function metricCard(label, value, detail, percent, warn = 80, danger = 92) {
+      const hasPercent = percent !== null && percent !== undefined && percent !== "" && Number.isFinite(Number(percent));
+      const bounded = hasPercent ? Math.max(0, Math.min(100, Number(percent))) : 0;
+      const cls = riskClass(percent, warn, danger);
+      return `<div class="metric ${cls}">
+        <div class="metric-label">${esc(label)}</div>
+        <div class="metric-value">${esc(value)}</div>
+        ${detail ? `<div class="muted">${esc(detail)}</div>` : ""}
+        ${hasPercent ? `<div class="bar"><span style="width:${bounded}%"></span></div>` : ""}
+      </div>`;
+    }
+
+    function renderSystem(system) {
+      if (!system) {
+        systemEl.innerHTML = `<div class="muted">System metrics unavailable.</div>`;
+        return;
+      }
+      const cpu = system.cpu || {};
+      const memory = system.memory || {};
+      const swap = system.swap || {};
+      const uptime = system.uptime || {};
+      const load = Array.isArray(cpu.load_average) ? cpu.load_average.filter(value => value !== null).join(", ") : "unknown";
+      const metrics = [
+        metricCard("CPU", formatPercent(cpu.percent), `${cpu.cores || 0} cores · load ${load}`, cpu.percent, 75, 90),
+        metricCard(
+          "Memory",
+          `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`,
+          `${formatBytes(memory.available)} available`,
+          memory.percent,
+          75,
+          90
+        ),
+        metricCard(
+          "Swap",
+          `${formatBytes(swap.used)} / ${formatBytes(swap.total)}`,
+          `${formatBytes(swap.free)} free`,
+          swap.percent,
+          40,
+          75
+        ),
+        metricCard("Uptime", uptime.display || "unknown", "", null),
+      ];
+      const disks = (system.disk || []).map(disk =>
+        metricCard(
+          `Disk ${disk.label || disk.path}`,
+          `${formatBytes(disk.used)} / ${formatBytes(disk.total)}`,
+          `${formatBytes(disk.free)} free · ${disk.path}`,
+          disk.percent,
+          80,
+          92
+        )
+      ).join("");
+      const processes = (system.processes || []).map(proc => {
+        const active = proc.active === "active";
+        return `<div class="process-row">
+          <div><strong>${esc(proc.label || proc.service)}</strong><div class="muted mono">${esc(proc.service)}</div></div>
+          <span class="pill ${active ? "ok" : ""}">${esc(proc.active || "unknown")}</span>
+          <div>${formatBytes(proc.memory_current)}</div>
+          <div class="muted">${proc.cpu_usage_nsec !== null && proc.cpu_usage_nsec !== undefined ? `${Math.round(proc.cpu_usage_nsec / 1000000000)}s CPU` : "CPU unknown"}</div>
+        </div>`;
+      }).join("");
+      systemEl.innerHTML = `<div class="room-head">
+        <div class="name">Server Performance</div>
+        <span class="pill">live</span>
+      </div>
+      <div class="metric-grid">${metrics.join("")}${disks}</div>
+      <div class="process-grid">${processes}</div>`;
     }
 
     function jobProgress(job) {
@@ -1966,10 +3484,11 @@ def render_page():
 
     async function loadState() {
       noticeEl.textContent = "Loading...";
-      const res = await fetch("/api/state");
+      const res = await apiFetch("/api/state");
       if (!res.ok) throw new Error("Failed to load state");
       const data = await res.json();
       currentState = data;
+      renderSystem(data.system);
       roomsEl.innerHTML = data.rooms.map(roomCard).join("");
       fillMapSelects(data);
       renderCampaignMaps(data.campaigns || []);
@@ -1989,7 +3508,7 @@ def render_page():
 
     async function restartRoom(room) {
       noticeEl.textContent = "Restarting...";
-      const res = await fetch("/api/restart", {
+      const res = await apiFetch("/api/restart", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({room})
@@ -2003,7 +3522,7 @@ def render_page():
       const select = document.querySelector(`[data-map-select="${room}"]`);
       if (!select) return;
       noticeEl.textContent = restart ? "Saving and restarting..." : "Saving...";
-      const res = await fetch("/api/default-map", {
+      const res = await apiFetch("/api/default-map", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({room, map: select.value, restart: restart ? "1" : "0"})
@@ -2017,7 +3536,7 @@ def render_page():
       const workshopId = document.querySelector("#workshop-id").value.trim();
       const kind = document.querySelector("#catalog-kind").value;
       noticeEl.textContent = "Queueing install...";
-      const res = await fetch("/api/workshop/install", {
+      const res = await apiFetch("/api/workshop/install", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({kind, workshop_id: workshopId})
@@ -2031,7 +3550,7 @@ def render_page():
       const query = document.querySelector("#catalog-query").value.trim();
       const kind = document.querySelector("#catalog-kind").value;
       noticeEl.textContent = "Searching...";
-      const res = await fetch(`/api/catalog/search?${new URLSearchParams({query, kind})}`);
+      const res = await apiFetch(`/api/catalog/search?${new URLSearchParams({query, kind})}`);
       const data = await res.json();
       if (!res.ok) {
         noticeEl.textContent = data.message || "Search failed";
@@ -2050,7 +3569,7 @@ def render_page():
 
     async function installCatalog(source, kind, id, title, url, installIds) {
       noticeEl.textContent = "Queueing install...";
-      const res = await fetch("/api/catalog/install", {
+      const res = await apiFetch("/api/catalog/install", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({source, kind, id, title, url, install_ids: installIds || ""})
@@ -2062,7 +3581,7 @@ def render_page():
 
     async function setAddonState(filename, state) {
       noticeEl.textContent = "Updating addon...";
-      const res = await fetch("/api/addon/state", {
+      const res = await apiFetch("/api/addon/state", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({filename, state})
@@ -2078,7 +3597,7 @@ def render_page():
         : `Soft delete ${filename}? This removes local files but keeps the source link for reinstall.`;
       if (!confirm(prompt)) return;
       noticeEl.textContent = "Deleting package...";
-      const res = await fetch("/api/map-package/delete", {
+      const res = await apiFetch("/api/map-package/delete", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({filename, mode})
@@ -2090,7 +3609,7 @@ def render_page():
 
     async function reinstallMapPackage(filename) {
       noticeEl.textContent = "Queueing reinstall...";
-      const res = await fetch("/api/map-package/reinstall", {
+      const res = await apiFetch("/api/map-package/reinstall", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({filename})
@@ -2100,6 +3619,151 @@ def render_page():
       await loadState();
     }
 
+    async function cancelJob(jobId) {
+      noticeEl.textContent = "Cancelling job...";
+      const res = await apiFetch("/api/job/cancel", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({job_id: jobId})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function exportPackages(selected) {
+      noticeEl.textContent = "Queueing export...";
+      const body = new URLSearchParams();
+      selected.forEach(filename => body.append("filename", filename));
+      const res = await apiFetch("/api/map-package/export-job", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message || (res.ok ? "Export queued" : "Export failed");
+      if (res.ok) await loadState();
+    }
+
+    async function exportSelectedPackages() {
+      const selected = [...document.querySelectorAll("[data-package-select]:checked")].map(input => input.dataset.packageSelect);
+      if (!selected.length) {
+        noticeEl.textContent = "Select at least one map package.";
+        return;
+      }
+      await exportPackages(selected);
+    }
+
+    function selectedManifestRecords() {
+      return [...new Set([...document.querySelectorAll("[data-manifest-select]:checked")].map(input => input.dataset.manifestSelect))];
+    }
+
+    async function exportManifestSelected() {
+      const selected = selectedManifestRecords();
+      if (!selected.length) {
+        noticeEl.textContent = "Select at least one map or mod record.";
+        return;
+      }
+      noticeEl.textContent = "Preparing JSON manifest...";
+      const body = new URLSearchParams();
+      selected.forEach(filename => body.append("filename", filename));
+      const res = await apiFetch("/api/manifest/export", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        noticeEl.textContent = data.message || "Manifest export failed";
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : "l4d2-manager-manifest.json";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      noticeEl.textContent = "JSON manifest exported.";
+    }
+
+    async function importManifest() {
+      const file = document.querySelector("#manifest-file").files[0];
+      if (!file) {
+        noticeEl.textContent = "Choose a manifest .json file first.";
+        return;
+      }
+      const form = new FormData();
+      form.append("file", file);
+      noticeEl.textContent = "Importing manifest...";
+      const res = await apiFetch("/api/manifest/import", {method: "POST", body: form});
+      const data = await res.json();
+      noticeEl.textContent = data.message || (res.ok ? "Manifest imported" : "Manifest import failed");
+      if (res.ok) {
+        document.querySelector("#manifest-file").value = "";
+        await loadState();
+      }
+    }
+
+    async function installManifestRecord(filename) {
+      noticeEl.textContent = "Queueing manifest install...";
+      const res = await apiFetch("/api/manifest/install", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({filename})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function removeManifestRecord(filename) {
+      if (!confirm(`Remove saved source record for ${filename}? This does not delete any local VPK file.`)) return;
+      noticeEl.textContent = "Removing record...";
+      const res = await apiFetch("/api/manifest/remove-record", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({filename})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function uploadImport(event) {
+      event.preventDefault();
+      const file = document.querySelector("#upload-file").files[0];
+      if (!file) {
+        noticeEl.textContent = "Choose a .vpk or exported .zip first.";
+        return;
+      }
+      const form = new FormData();
+      form.append("file", file);
+      form.append("kind", document.querySelector("#upload-kind").value);
+      noticeEl.textContent = "Uploading...";
+      const res = await apiFetch("/api/upload", {method: "POST", body: form});
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      if (res.ok) {
+        document.querySelector("#upload-file").value = "";
+        await loadState();
+      }
+    }
+
+    async function logout() {
+      try {
+        await apiFetch("/api/logout", {method: "POST"});
+      } finally {
+        location.href = "/login";
+      }
+    }
+
+    document.querySelector("#logout").addEventListener("click", logout);
     document.querySelector("#refresh").addEventListener("click", loadState);
     const catalogSearchButton = document.querySelector("#catalog-search");
     document.querySelector("#catalog-search").addEventListener("click", event => {
@@ -2128,6 +3792,12 @@ def render_page():
         event.target.dataset.catalogInstallIds || ""
       ).finally(() => event.target.disabled = false);
     });
+    jobsEl.addEventListener("click", event => {
+      const jobId = event.target.dataset.jobCancel;
+      if (!jobId) return;
+      event.target.disabled = true;
+      cancelJob(jobId).finally(() => event.target.disabled = false);
+    });
     roomsEl.addEventListener("click", event => {
       const room = event.target.dataset.restart;
       const saveRoom = event.target.dataset.save;
@@ -2153,9 +3823,20 @@ def render_page():
     addonsEl.addEventListener("click", event => {
       const filename = event.target.dataset.addon;
       const state = event.target.dataset.addonState;
-      if (!filename || !state) return;
-      event.target.disabled = true;
-      setAddonState(filename, state).finally(() => event.target.disabled = false);
+      const manifestInstall = event.target.dataset.manifestInstall;
+      const manifestRemove = event.target.dataset.manifestRemove;
+      if (filename && state) {
+        event.target.disabled = true;
+        setAddonState(filename, state).finally(() => event.target.disabled = false);
+      }
+      if (manifestInstall) {
+        event.target.disabled = true;
+        installManifestRecord(manifestInstall).finally(() => event.target.disabled = false);
+      }
+      if (manifestRemove) {
+        event.target.disabled = true;
+        removeManifestRecord(manifestRemove).finally(() => event.target.disabled = false);
+      }
     });
     mapPackagesEl.addEventListener("click", event => {
       const filename = event.target.dataset.addon;
@@ -2163,6 +3844,9 @@ def render_page():
       const deleteFilename = event.target.dataset.packageDelete;
       const deleteMode = event.target.dataset.packageMode;
       const reinstallFilename = event.target.dataset.packageReinstall;
+      const exportFilename = event.target.dataset.packageExport;
+      const manifestInstall = event.target.dataset.manifestInstall;
+      const manifestRemove = event.target.dataset.manifestRemove;
       if (filename && state) {
         event.target.disabled = true;
         setAddonState(filename, state).finally(() => event.target.disabled = false);
@@ -2175,6 +3859,35 @@ def render_page():
         event.target.disabled = true;
         reinstallMapPackage(reinstallFilename).finally(() => event.target.disabled = false);
       }
+      if (exportFilename) {
+        event.target.disabled = true;
+        exportPackages([exportFilename]).finally(() => event.target.disabled = false);
+      }
+      if (manifestInstall) {
+        event.target.disabled = true;
+        installManifestRecord(manifestInstall).finally(() => event.target.disabled = false);
+      }
+      if (manifestRemove) {
+        event.target.disabled = true;
+        removeManifestRecord(manifestRemove).finally(() => event.target.disabled = false);
+      }
+    });
+    exportSelectedButton.addEventListener("click", event => {
+      event.target.disabled = true;
+      exportSelectedPackages().finally(() => event.target.disabled = false);
+    });
+    manifestExportButton.addEventListener("click", event => {
+      event.target.disabled = true;
+      exportManifestSelected().finally(() => event.target.disabled = false);
+    });
+    manifestImportButton.addEventListener("click", event => {
+      event.target.disabled = true;
+      importManifest().finally(() => event.target.disabled = false);
+    });
+    uploadForm.addEventListener("submit", event => {
+      const button = document.querySelector("#upload-submit");
+      button.disabled = true;
+      uploadImport(event).finally(() => button.disabled = false);
     });
     loadState().catch(err => noticeEl.textContent = err.message);
   </script>
@@ -2185,7 +3898,7 @@ def render_page():
 class Handler(BaseHTTPRequestHandler):
     server_version = "L4D2Manager/0.1"
 
-    def authenticated(self):
+    def basic_authenticated(self):
         if not ADMIN_PASSWORD:
             return False
         header = self.headers.get("Authorization", "")
@@ -2195,30 +3908,69 @@ class Handler(BaseHTTPRequestHandler):
             decoded = base64.b64decode(header[6:]).decode("utf-8")
         except Exception:
             return False
-        return decoded == f"{ADMIN_USER}:{ADMIN_PASSWORD}"
+        username, separator, password = decoded.partition(":")
+        return bool(separator) and check_credentials(username, password)
+
+    def session_token(self):
+        return session_from_cookie(self.headers.get("Cookie", ""))
+
+    def authenticated(self):
+        return self.basic_authenticated() or bool(self.session_token())
 
     def require_auth(self):
-        payload = b"Authentication required for L4D2 Manager.\n"
+        payload = json.dumps({"ok": False, "message": "Authentication required"}).encode("utf-8")
         self.send_response(401)
-        self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def send_json(self, status, body):
-        payload = json.dumps(body).encode("utf-8")
-        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_html(self, status, body, headers=None):
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_json(self, status, body, headers=None):
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_json_download(self, filename, body):
+        payload = json.dumps(body, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
-        if not self.authenticated():
-            self.require_auth()
-            return
         parsed = urlparse(self.path)
+        if parsed.path == "/login":
+            if self.authenticated():
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_html(200, render_login_page())
+            return
+        if not self.authenticated():
+            if parsed.path == "/" or parsed.path == "/index.html":
+                self.send_html(200, render_login_page())
+            else:
+                self.require_auth()
+            return
         if parsed.path == "/" or parsed.path == "/index.html":
             payload = render_page().encode("utf-8")
             self.send_response(200)
@@ -2237,11 +3989,59 @@ class Handler(BaseHTTPRequestHandler):
             result = search_catalog(query, kind)
             self.send_json(200 if result["ok"] else 400, result)
             return
+        if parsed.path == "/api/map-package/export":
+            fields = parse_qs(parsed.query)
+            filename = fields.get("filename", [""])[0]
+            result = export_map_packages([filename])
+            if not result["ok"]:
+                self.send_json(400, result)
+                return
+            send_zip_file(self, result["path"], result["filename"])
+            return
+        if parsed.path == "/api/export/download":
+            fields = parse_qs(parsed.query)
+            job_id = fields.get("job_id", [""])[0]
+            result = export_download_for_job(job_id)
+            if not result["ok"]:
+                self.send_json(400, result)
+                return
+            stream_zip_file(self, result["path"], result["filename"], result["job_id"])
+            return
         self.send_error(404)
 
     def do_POST(self):
+        if self.path == "/api/login":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            fields = parse_qs(body)
+            username = fields.get("username", [""])[0]
+            password = fields.get("password", [""])[0]
+            if not check_credentials(username, password):
+                self.send_json(401, {"ok": False, "message": "Invalid username or password"})
+                return
+            token = create_session(username)
+            self.send_json(
+                200,
+                {"ok": True, "message": "Signed in"},
+                {"Set-Cookie": session_cookie_header(token)},
+            )
+            return
+        if self.path == "/api/logout":
+            destroy_session(self.session_token())
+            self.send_json(
+                200,
+                {"ok": True, "message": "Signed out"},
+                {"Set-Cookie": session_cookie_header("", max_age=0)},
+            )
+            return
         if not self.authenticated():
             self.require_auth()
+            return
+        if self.path == "/api/upload":
+            handle_upload_request(self)
+            return
+        if self.path == "/api/manifest/import":
+            handle_manifest_import_request(self)
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8")
@@ -2274,6 +4074,11 @@ class Handler(BaseHTTPRequestHandler):
             result = create_catalog_install_job(source, kind, item_id, title, url, install_ids)
             self.send_json(200 if result["ok"] else 400, result)
             return
+        if self.path == "/api/job/cancel":
+            job_id = fields.get("job_id", [""])[0]
+            result = cancel_job(job_id)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
         if self.path == "/api/addon/state":
             filename = fields.get("filename", [""])[0]
             state = fields.get("state", [""])[0]
@@ -2289,6 +4094,45 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/map-package/reinstall":
             filename = fields.get("filename", [""])[0]
             result = reinstall_map_package(filename)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/map-package/export-job":
+            filenames = fields.get("filename", [])
+            if len(filenames) == 1 and "," in filenames[0]:
+                filenames = [value for value in filenames[0].split(",") if value]
+            result = create_export_job(filenames)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/map-package/export-bulk":
+            filenames = fields.get("filename", [])
+            if len(filenames) == 1 and "," in filenames[0]:
+                filenames = [value for value in filenames[0].split(",") if value]
+            result = export_map_packages(filenames)
+            if not result["ok"]:
+                self.send_json(400, result)
+                return
+            send_zip_file(self, result["path"], result["filename"])
+            return
+        if self.path == "/api/manifest/export":
+            filenames = fields.get("filename", [])
+            if len(filenames) == 1 and "," in filenames[0]:
+                filenames = [value for value in filenames[0].split(",") if value]
+            result = create_manifest(filenames)
+            if not result["ok"]:
+                self.send_json(400, result)
+                return
+            self.send_json_download(f"l4d2-manager-manifest-{int(time.time())}.json", result["manifest"])
+            return
+        if self.path == "/api/manifest/install":
+            filenames = fields.get("filename", [])
+            if len(filenames) == 1 and "," in filenames[0]:
+                filenames = [value for value in filenames[0].split(",") if value]
+            result = install_manifest_records(filenames)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/manifest/remove-record":
+            filename = fields.get("filename", [""])[0]
+            result = remove_manifest_record(filename)
             self.send_json(200 if result["ok"] else 400, result)
             return
         self.send_error(404)

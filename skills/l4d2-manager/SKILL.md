@@ -32,7 +32,161 @@ description: "管理 L4D2 服务器配置、地图安装及实时切换。当需
 
 ---
 
-## 0. 服务器基础环境配置
+## 0. 新服务器首次接入前必须手动完成的准备
+
+如果你刚拿到一台新的 Ubuntu / Debian 服务器，下面这些步骤建议先由你手动完成，再继续执行本 skill 里的地图、服务和 Web 面板相关操作。这一章只覆盖“首次接入与安全基线”，不代替完整的系统加固文档；所有真实密码、私钥、token 只保存在服务器配置或你自己的私有环境中，不要写进公开文档。
+
+### A. 确认服务器基础信息
+在开始登录前，先把以下信息确认好并单独保存：
+- 公网 IP 或可用域名，例如 `YOUR_SERVER_IP`。
+- 系统版本是否为 Ubuntu / Debian，便于后续使用 `apt`、`systemd` 和 `ufw`。
+- 云厂商提供的初始登录方式：密码、控制台注入公钥、救援模式或 VNC。
+- 云控制台里是否能看到安全组 / 防火墙规则入口。
+
+如果这些基础信息都不明确，后续做 SSH 加固和防火墙放行时很容易把自己锁在服务器外。
+
+### B. 完成首次登录
+首次登录可以先使用云厂商提供的初始密码，或使用镜像预置的登录账号：
+
+```bash
+ssh root@YOUR_SERVER_IP
+```
+
+或者：
+
+```bash
+ssh ubuntu@YOUR_SERVER_IP
+```
+
+注意事项：
+- 首次登录阶段不要急着关闭密码登录或禁止 root 登录。
+- 先确认你可以稳定连上，并且知道当前系统给你的默认账号是什么。
+- 如果云厂商要求你先在控制台重置密码，请先完成这一步。
+
+### C. 创建或确认可用的管理账号
+后续日常管理建议使用一个可 `sudo` 的普通用户，而不是长期直接使用 `root`。
+
+如果云镜像已经自带管理用户（例如 `ubuntu`），先确认它可用：
+
+```bash
+whoami
+sudo -v
+```
+
+如果没有现成的管理用户，再手动创建一个：
+
+```bash
+sudo adduser YOUR_SSH_USER
+sudo usermod -aG sudo YOUR_SSH_USER
+```
+
+完成后建议重新开一个终端测试该用户是否能登录和提权，确认没问题再继续下一步。
+
+### D. 配置 SSH 公钥登录
+先在本地电脑确认你已有可用公钥；如果没有，可以在本地终端生成：
+
+```bash
+ssh-keygen -t ed25519 -C "l4d2-admin"
+```
+
+然后把本地公钥追加到服务器目标用户的 `authorized_keys`。例如把本地 `~/.ssh/id_ed25519.pub` 的内容复制到服务器：
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+nano ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+保存后，从本地新开一个终端验证是否能免密登录：
+
+```bash
+ssh YOUR_SSH_USER@YOUR_SERVER_IP
+```
+
+只有在这一步验证成功之后，才建议继续收紧 SSH 策略。
+
+### E. 在本地配置 SSH 别名
+为了和本文档后续命令保持一致，建议你在本地 `~/.ssh/config` 中提前配置一个固定别名，例如 `myubuntu`：
+
+```sshconfig
+Host myubuntu
+    HostName YOUR_SERVER_IP
+    User YOUR_SSH_USER
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+完成后测试：
+
+```bash
+ssh myubuntu "whoami"
+```
+
+后文大量命令都默认使用这种形式，例如 `ssh myubuntu "sudo systemctl status l4d2"`。
+
+### F. 加固 SSH 登录策略
+在确认“公钥登录 + sudo 用户 + 本地 SSH 别名”都正常后，再考虑收紧 SSH 登录策略，例如：
+- 禁止 `root` 直接 SSH 登录。
+- 关闭基于密码的 SSH 登录，仅保留公钥。
+- 明确记录 SSH 端口是否保持默认 `22/tcp`。
+
+这一步的核心原则是：**先验证新登录方式可用，再去关闭旧方式**。不要在只开着一个 root 会话、且还没验证公钥回连时就直接改 SSH 策略。
+
+### G. 配置云安全组与系统防火墙
+这一步也必须按顺序来做。
+
+先保证 SSH 所需端口已放行：
+- 云厂商安全组 / 防火墙中放行 `22/tcp`。
+- 服务器内如果启用了 `ufw`，也要放行 `22/tcp`。
+
+常用命令示例：
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw status
+```
+
+随后再根据实际用途逐步放行其他端口：
+- `27015/udp`：Room 1 游戏端口。
+- `27016/udp`：Room 2 游戏端口。
+- `8080/tcp`：仅当你要启用 Web 管理面板时才需要放行。
+
+建议把“云安全组”和“服务器内防火墙”当成两层规则分别检查，缺一不可。例如：
+
+```bash
+sudo ufw allow 27015/udp
+sudo ufw allow 27016/udp
+```
+
+如果暂时还不用 Web 面板，可以先不要开放 `8080/tcp`。
+
+### H. 执行基础系统校准
+在进入 L4D2 安装前，建议先做几项基础校准：
+- 设置正确的主机名，便于区分多台服务器。
+- 设置时区，确保后续 `journalctl` 与日志时间可读。
+- 执行一次基础系统更新，避免刚装机时包索引过旧。
+
+常用命令示例：
+
+```bash
+sudo hostnamectl set-hostname l4d2-server
+sudo timedatectl set-timezone Asia/Shanghai
+sudo apt update && sudo apt upgrade -y
+```
+
+### I. 做一轮接入验证
+在开始后续 skill 步骤之前，建议你至少完成下面这轮人工验证：
+1. 从本地用 `ssh myubuntu` 重新连接一次，确认不是靠旧会话“假在线”。
+2. 执行 `sudo -v`，确认管理用户有提权能力。
+3. 执行 `sudo ufw status`，确认当前放行规则符合你的预期。
+4. 在云控制台再次检查安全组，确认 `22/tcp` 和需要的游戏端口已放行。
+5. 确认此时即使断开当前 SSH 窗口，你也能重新连接回来。
+
+完成以上步骤后，再继续阅读后面的“服务器基础环境配置”“L4D2 服务安装与运行”等章节，会更安全，也更不容易中途失联。
+
+---
+
+## 1. 服务器基础环境配置
 
 在安装游戏之前，为了解决国内服务器访问 Steam 网络慢、下载失败的问题，我们执行了以下核心配置：
 
@@ -48,7 +202,7 @@ description: "管理 L4D2 服务器配置、地图安装及实时切换。当需
 
 ---
 
-## 1. L4D2 服务安装与运行
+## 2. L4D2 服务安装与运行
 
 ### A. 安装目录
 - **路径**：`/opt/l4d2`
@@ -69,7 +223,7 @@ description: "管理 L4D2 服务器配置、地图安装及实时切换。当需
 
 ---
 
-## 2. 安装新的创意工坊地图
+## 3. 安装新的创意工坊地图
 
 **建议优先使用三方地图下载工具**（如 Steam API 或第三方 Web 下载器），以避开 SteamCMD 在国内的连接限制。
 
@@ -109,7 +263,7 @@ ssh myubuntu "sudo systemctl restart l4d2_2"
 
 ---
 
-## 3. 手动提取 VPK 资源 (推荐)
+## 4. 手动提取 VPK 资源 (推荐)
 
 为了服务器稳定性，建议将 VPK 内容直接提取到游戏核心目录。
 
@@ -122,7 +276,7 @@ ssh myubuntu "sudo systemctl restart l4d2_2"
 
 ---
 
-## 4. 修改服务器默认启动地图
+## 5. 修改服务器默认启动地图
 
 若需更改服务器启动时加载的地图，需修改启动脚本。
 
@@ -138,7 +292,7 @@ ssh myubuntu "sudo systemctl restart l4d2_2"
 
 ---
 
-## 5. 游戏内实时切换地图 (RCON)
+## 6. 游戏内实时切换地图 (RCON)
 
 无需重启服务器，直接在游戏控制台中操作。
 
@@ -157,7 +311,7 @@ ssh myubuntu "sudo systemctl restart l4d2_2"
 
 ---
 
-## 6. 已安装地图的快速切换
+## 7. 已安装地图的快速切换
 
 如果你已经通过上述步骤下载并安装了多张地图，无需修改启动脚本或重启服务器，可以通过 RCON 远程指令实现秒级切换。
 
@@ -186,7 +340,7 @@ ls /opt/l4d2/left4dead2/maps/*.bsp | xargs -n1 basename | sed 's/\.bsp//'
 
 ---
 
-## 7. 常见问题排查 (Troubleshooting)
+## 8. 常见问题排查 (Troubleshooting)
 
 ### A. 标准健康检查流程
 
@@ -235,7 +389,7 @@ sudo chown -R steam:steam /opt/l4d2/left4dead2/
 
 ---
 
-## 8. 存储管理与旧地图清理
+## 9. 存储管理与旧地图清理
 
 随着安装的地图增多，服务器磁盘空间可能会被占满。地图文件主要存在于两个位置：
 
@@ -271,7 +425,7 @@ ssh myubuntu "sudo du -sh /opt/l4d2/left4dead2/addons /opt/l4d2/left4dead2/maps 
 
 ---
 
-## 9. 服务器远程管理技巧 (SSH)
+## 10. 服务器远程管理技巧 (SSH)
 
 为了方便管理，我们在本地配置了 SSH 别名，无需记忆复杂的 IP 地址。
 
@@ -323,8 +477,9 @@ Web 管理面板是部署在服务器上的轻量浏览器界面，适合日常�
 - 按“战役 -> 子地图”二级选择默认地图，并可选择只保存或保存后重启房间。
 - `Search & Install` 以 Steam Workshop 搜索为主，GameMaps 作为受控兜底来源；也保留手动输入 Workshop ID 的安装入口。
 - Workshop 安装使用 `install-workshop <map|mod> <workshop_id>`；GameMaps 只允许 `install-gamemaps-map <numeric_id>`，不支持任意 URL 下载。
-- 安装任务在后台执行，页面显示进度条、当前阶段和分包进度；job 状态持久化到 `/var/lib/l4d2-manager-web/jobs/`，刷新页面后仍可查看未完成或历史任务。
+- 安装任务在后台执行，页面显示进度条、当前阶段和分包进度；job 状态持久化到 `/var/lib/l4d2-manager-web/jobs/`，刷新页面后仍可查看未完成或历史任务，并可提前取消仍在排队或运行中的任务。
 - 区分 Map Packages 与 Mod Management，避免把含地图的 VPK 当作普通 Mod 管理；地图包支持 `Reinstall`、普通删除和彻底删除。
+- Transfer 区域推荐使用轻量 JSON Manifest 迁移 Workshop 地图和 Mod 的 ID 与来源记录；导入后由用户手动重新下载。大文件 `.vpk` / 迁移 ZIP 仍保留为离线迁移方式。
 - 启用/禁用已有 `.vpk`，仅在 `addons/` 与 `addons_disabled/` 之间移动文件，不提供删除和任意 shell 输入。
 - 地图列表会识别 loose `.bsp`，也会索引启用 VPK 内的 `maps/*.bsp` 与 `missions/*.txt`，并按战役分组展示；mission parser 支持非固定顶层 key，可识别 Glubtastic 4/5 这类自定义 mission。
 - Web 面板会维护地图包来源记录，例如 `/var/lib/l4d2-manager-web/packages.json`，用于展示来源链接、重装入口和普通删除后的恢复入口。
@@ -350,13 +505,13 @@ ssh myubuntu "cd /tmp/l4d2-manager-web && sudo bash install.sh"
 - `daemon-reload` 后启用并重启 `l4d2-manager-web.service`。
 
 安全注意事项：
-- 面板使用 Basic Auth，登录配置保存在服务器 `/etc/l4d2-manager-web.env`；文档、Issue、提交说明和聊天记录中不要记录真实密码。
+- 面板浏览器入口使用页面内登录表单和 session cookie；脚本仍兼容 Basic Authorization。登录配置保存在服务器 `/etc/l4d2-manager-web.env`；文档、Issue、提交说明和聊天记录中不要记录真实密码。
 - 访问面板需要同时放行服务器本机防火墙和云安全组的 `8080/tcp`。
 - 所有需要 root 权限的操作必须经过 `/usr/local/bin/l4d2-webctl`，不要让 Web 服务执行任意 shell。
-- sudoers 只白名单以下能力：重启 `l4d2` / `l4d2_2`、`set-default-map`、`install-workshop`、`install-gamemaps-map`、`set-addon-state`、`delete-map-package`。
+- sudoers 只白名单以下能力：重启 `l4d2` / `l4d2_2`、`set-default-map`、`install-workshop`、`install-gamemaps-map`、`set-addon-state`、`delete-map-package`、`cleanup-job-temp`、`import-vpk`、`import-export-zip`。
 - 普通删除只删除本地地图包和已提取文件，但保留来源记录以便重装；彻底删除会同时移除来源记录，后续需要重新搜索或重新输入 Workshop ID。
 - GameMaps 入口只接受数字 details id，并从 `https://www.gamemaps.com/details/<id>` 派生下载；不要增加任意 URL 输入框。
-- 不要把 RCON 密码、GSLT、Steam token、SSH 私钥、代理订阅或 Basic Auth 密码写入公开文档。
+- 不要把 RCON 密码、GSLT、Steam token、SSH 私钥、代理订阅或 Web 登录密码写入公开文档。
 
 常用检查命令：
 ```bash
@@ -380,7 +535,7 @@ sudo systemctl show l4d2 l4d2_2 -p ExecMainStartTimestamp --no-pager
 
 ---
 
-## 10. 常见问题 (FAQ)
+## 11. 常见问题 (FAQ)
 
 ### Q: 为什么服务器装了地图，我的本地电脑（客户端）还需要下载？
 这是由 Source 引擎（L4D2 所使用的引擎）的架构决定的，并非 Bug：
@@ -403,7 +558,7 @@ sudo systemctl show l4d2 l4d2_2 -p ExecMainStartTimestamp --no-pager
 
 ---
 
-## 11. 本地地图备份与应急恢复
+## 12. 本地地图备份与应急恢复
 
 为了防止 Steam 创意工坊同步失败 or 文件意外丢失，我们在本地建立了备份目录。
 
@@ -434,7 +589,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 
 ---
 
-## 12. 插件与 Mod 管理 (Addons Management)
+## 13. 插件与 Mod 管理 (Addons Management)
 
 除了地图，服务器还可以通过 VPK 插件增强功能（如提升 Bot 智商、增加管理员菜单）。
 
@@ -469,7 +624,7 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 
 ---
 
-## 13. 多实例（多房间）配置指南
+## 14. 多实例（多房间）配置指南
 
 为了让更多朋友同时玩，可以在同一台服务器上运行多个 L4D2 实例。
 
@@ -533,7 +688,7 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 14. 常用管理指令汇总
+## 15. 常用管理指令汇总
 
 - **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
 - **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
@@ -543,7 +698,7 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 15. 申请与配置 GSLT 提升权重
+## 16. 申请与配置 GSLT 提升权重
 
 **GSLT (Game Server Login Token)** 是让服务器获得“官方身份认证”的关键，能显著提升全球搜索排名。
 

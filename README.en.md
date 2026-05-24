@@ -89,7 +89,7 @@ $l4d2-manager inspect addons, maps, and workshop cache usage, then suggest clean
 - **Manual VPK extraction**: Recommended workflow for extracting VPK content into the game directory when direct addon loading is not enough.
 - **Fast map switching**: RCON commands for changing maps without restarting the server.
 - **Remote operations**: SSH alias usage for repeatable server maintenance.
-- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Steam-first Workshop map search, background install progress, and separating Map Packages from regular Mods.
+- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Steam-first Workshop map search, cancellable background install progress, and separating Map Packages from regular Mods.
 - **Troubleshooting notes**: Practical fixes for common issues such as KeyValues errors, missing resources, and repeated client downloads.
 - **Secret redaction**: Public docs use placeholders only and do not record real RCON passwords, GSLT values, Steam tokens, or SSH credentials.
 
@@ -127,12 +127,13 @@ For browser-based day-to-day operations, deploy the lightweight package under `d
 
 - **Installer**: `deploy/l4d2-manager-web/install.sh`, which installs the systemd unit, sudoers whitelist, `l4d2-webctl`, and `vpk_extract.py`.
 - **Core files**: `app.py`, `l4d2-webctl`, `vpk_extract.py`, `l4d2-manager-web.service`, and `l4d2-manager-web.sudoers`.
-- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, background install progress, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
-- **Map package management**: Map Packages support `Reinstall`, Soft Delete, and Purge Delete. Soft Delete removes local files while keeping the source record for later reinstall.
+- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, cancellable background install progress, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **Map package management**: Map Packages support `Reinstall`, Soft Delete, Purge Delete, single export, and bulk export. Soft Delete removes local files while keeping the source record for later reinstall.
+- **Transfer workflow**: The preferred migration path is a lightweight JSON Manifest that stores Workshop ids and package metadata for maps and mods; imports create remote records that can be reinstalled manually. Large ZIP exports containing `.vpk` files remain available for offline transfers.
 - **Jobs and records**: Install jobs persist under `/var/lib/l4d2-manager-web/jobs/`, and package source records live in `/var/lib/l4d2-manager-web/packages.json`, so refreshes can still show progress and reinstall entries.
-- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; `/api/map-package/delete` and `/api/map-package/reinstall` manage installed map packages; the older `/api/workshop/install` remains available for compatibility.
+- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; `/api/manifest/export`, `/api/manifest/import`, and `/api/manifest/install` manage lightweight migration records; the older `/api/workshop/install` remains available for compatibility.
 - **Network access**: The panel listens on `8080/tcp` by default, so both the local firewall such as `ufw` and the cloud security group must allow that port.
-- **Authentication**: Basic Auth credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
+- **Authentication**: The browser uses an in-page login form with a session cookie; Basic Authorization is still accepted for scripts. Credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
 - **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. GameMaps installs accept only numeric details ids; the panel does not expose arbitrary URL downloads or shell execution.
 
 ## 4. Live Map Switching With RCON

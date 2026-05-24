@@ -49,7 +49,9 @@ for campaign in campaigns:
     if campaign.get("id") == "other":
         other_maps.update(item["name"] for item in campaign.get("maps", []))
 
-if any(addon["filename"].startswith("map_2459037122_") for addon in addons):
+active_addons = [addon for addon in addons if addon.get("state") in {"enabled", "disabled"}]
+
+if any(addon["filename"].startswith("map_2459037122_") for addon in active_addons):
     glub4 = next((campaign for campaign in campaigns if campaign["title"] == "Glubtastic 4"), None)
     assert glub4, "Glubtastic 4 package is installed but not grouped as a campaign"
     glub4_maps = [item["name"] for item in glub4["maps"]]
@@ -57,7 +59,7 @@ if any(addon["filename"].startswith("map_2459037122_") for addon in addons):
     assert not set(glub4_maps) & other_maps, "Glubtastic 4 maps leaked into Other"
     print("glubtastic4_campaign", glub4_maps)
 
-if any(addon["filename"].startswith("map_3366491323_") for addon in addons):
+if any(addon["filename"].startswith("map_3366491323_") for addon in active_addons):
     glub5 = next((campaign for campaign in campaigns if campaign["title"] == "Glubtastic 5"), None)
     assert glub5, "Glubtastic 5 package is installed but not grouped as a campaign"
     glub5_maps = [item["name"] for item in glub5["maps"]]
@@ -124,3 +126,58 @@ status, invalid_delete_mode = request(
     expect_error=True,
 )
 print("invalid_delete_mode", status, invalid_delete_mode["message"])
+
+status, invalid_cancel = request(
+    "/api/job/cancel",
+    {"job_id": "../bad"},
+    expect_error=True,
+)
+print("invalid_cancel", status, invalid_cancel["message"])
+
+status, invalid_export = request(
+    "/api/map-package/export-bulk",
+    {"filename": "../bad.vpk"},
+    expect_error=True,
+)
+print("invalid_export", status, invalid_export["message"])
+
+status, invalid_export_job = request(
+    "/api/map-package/export-job",
+    {"filename": "../bad.vpk"},
+    expect_error=True,
+)
+print("invalid_export_job", status, invalid_export_job["message"])
+
+status, invalid_export_download = request(
+    "/api/export/download?job_id=../bad",
+    expect_error=True,
+)
+print("invalid_export_download", status, invalid_export_download["message"])
+
+status, invalid_upload = request(
+    "/api/upload",
+    {"kind": "map"},
+    expect_error=True,
+)
+print("invalid_upload", status, invalid_upload["message"])
+
+status, invalid_manifest_export = request(
+    "/api/manifest/export",
+    {"filename": "../bad.vpk"},
+    expect_error=True,
+)
+print("invalid_manifest_export", status, invalid_manifest_export["message"])
+
+status, invalid_manifest_install = request(
+    "/api/manifest/install",
+    {"filename": "../bad.vpk"},
+    expect_error=True,
+)
+print("invalid_manifest_install", status, invalid_manifest_install["message"])
+
+status, invalid_manifest_remove = request(
+    "/api/manifest/remove-record",
+    {"filename": "../bad.vpk"},
+    expect_error=True,
+)
+print("invalid_manifest_remove", status, invalid_manifest_remove["message"])

@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -22,11 +23,14 @@ GAME_DIR = Path("/opt/l4d2/left4dead2")
 ADDONS_DIR = GAME_DIR / "addons"
 DISABLED_ADDONS_DIR = GAME_DIR / "addons_disabled"
 DOWNLOAD_DIR = Path("/tmp/l4d2-manager-web-downloads")
+UPLOADS_DIR = Path("/var/lib/l4d2-manager-web/uploads")
 VPK_EXTRACTOR = Path("/opt/l4d2-manager-web/vpk_extract.py")
 MAP_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$")
 WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 GAMEMAPS_ID_RE = re.compile(r"^[0-9]{1,12}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
+JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+STAGED_UPLOAD_RE = re.compile(r"^upload_[a-f0-9]{12}_[a-f0-9]{12}\.(vpk|zip)$")
 GAMEMAPS_HOSTS = {"www.gamemaps.com", "gamemaps.com"}
 ALLOWED_EXTRACT_ROOTS = {"maps", "missions", "materials", "models", "sound", "scripts"}
 INLINE_ARCHIVE = 0x7FFF
@@ -258,6 +262,13 @@ def download_file(url, destination, allowed_hosts=None):
     emit("progress", stage="downloaded", downloaded=downloaded, total=total, message="Download finished")
 
 
+def job_temp_name(name):
+    job_id = os.environ.get("L4D2_WEB_JOB_ID", "")
+    if JOB_ID_RE.match(job_id):
+        return f"{job_id}_{name}"
+    return name
+
+
 def extract_map_package(destination):
     if not VPK_EXTRACTOR.is_file():
         fail(f"VPK extractor missing: {VPK_EXTRACTOR}")
@@ -289,7 +300,7 @@ def install_workshop(kind, workshop_id):
     details = fetch_workshop_details(workshop_id)
     title = safe_title(details.get("title", "workshop_item"))
     destination = ADDONS_DIR / f"{kind}_{workshop_id}_{title}.vpk"
-    download_target = DOWNLOAD_DIR / f"{workshop_id}.vpk"
+    download_target = DOWNLOAD_DIR / job_temp_name(f"{workshop_id}.vpk")
     emit("stage", stage="preparing", message=f"Downloading {details.get('title', workshop_id)}")
     download_file(details["file_url"], download_target)
     shutil.copy2(download_target, destination)
@@ -354,7 +365,7 @@ def install_gamemaps_map(gamemaps_id):
     details = fetch_gamemaps_details(gamemaps_id)
     title = safe_title(details["title"])
     destination = ADDONS_DIR / f"map_gamemaps_{gamemaps_id}_{title}.vpk"
-    download_target = DOWNLOAD_DIR / f"gamemaps_{gamemaps_id}.vpk"
+    download_target = DOWNLOAD_DIR / job_temp_name(f"gamemaps_{gamemaps_id}.vpk")
     errors = []
     for url in details["links"]:
         try:
@@ -449,6 +460,97 @@ def delete_map_package(filename, mode):
     print(f"{filename} {mode} deleted; removed {deleted_loose} loose files")
 
 
+def cleanup_job_temp(job_id):
+    if not JOB_ID_RE.match(job_id):
+        fail("invalid job id")
+    if not DOWNLOAD_DIR.exists():
+        return
+    removed = 0
+    for path in DOWNLOAD_DIR.glob(f"{job_id}_*"):
+        try:
+            if path.is_file():
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    print(f"removed {removed} temporary files")
+
+
+def staged_upload_path(filename):
+    if not STAGED_UPLOAD_RE.match(filename):
+        fail("invalid staged upload filename")
+    path = UPLOADS_DIR / filename
+    if not path.is_file():
+        fail("staged upload not found")
+    return path
+
+
+def import_vpk(kind, staged_filename, final_filename):
+    if kind not in {"map", "mod"}:
+        fail("kind must be map or mod")
+    if not ADDON_RE.match(final_filename) or "/" in final_filename or "\\" in final_filename:
+        fail("invalid final filename")
+    staged = staged_upload_path(staged_filename)
+    assert_vpk_file(staged)
+    ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+    destination = ADDONS_DIR / final_filename
+    if destination.exists() or (DISABLED_ADDONS_DIR / final_filename).exists():
+        fail(f"target already exists: {final_filename}")
+    emit("stage", stage="copying", message=f"Copying {final_filename}")
+    shutil.copy2(staged, destination)
+    chown_steam(destination)
+    if kind == "map":
+        extract_map_package(destination)
+    emit("message", message=f"imported {destination.name}")
+
+
+def safe_zip_member(name):
+    normalized = name.replace("\\", "/")
+    parts = Path(normalized).parts
+    if normalized.startswith("/") or ".." in parts:
+        return None
+    if normalized in {"manifest.json", "packages.json"}:
+        return normalized
+    if normalized.startswith("addons/") and len(parts) == 2 and ADDON_RE.match(parts[1]):
+        return normalized
+    return None
+
+
+def import_export_zip(staged_filename):
+    staged = staged_upload_path(staged_filename)
+    ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+    imported = []
+    try:
+        with zipfile.ZipFile(staged) as archive:
+            names = archive.namelist()
+            if "manifest.json" not in names or "packages.json" not in names:
+                fail("zip is not an L4D2 manager export")
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if manifest.get("format") != "l4d2-manager-web-export":
+                fail("unsupported export manifest")
+            addon_names = [name for name in names if name.replace("\\", "/").startswith("addons/")]
+            if not addon_names:
+                fail("export contains no VPK files")
+            for name in names:
+                if not safe_zip_member(name):
+                    fail(f"zip contains unsupported path: {name}")
+            for name in addon_names:
+                filename = Path(name).name
+                destination = ADDONS_DIR / filename
+                if destination.exists() or (DISABLED_ADDONS_DIR / filename).exists():
+                    fail(f"target already exists: {filename}")
+                emit("stage", stage="copying", message=f"Importing {filename}")
+                with archive.open(name) as source, open(destination, "wb") as target:
+                    shutil.copyfileobj(source, target)
+                assert_vpk_file(destination)
+                chown_steam(destination)
+                extract_map_package(destination)
+                imported.append(filename)
+    except zipfile.BadZipFile:
+        fail("invalid zip file")
+    emit("message", message="imported " + ", ".join(imported))
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "set-default-map":
         if len(sys.argv) != 4:
@@ -475,7 +577,22 @@ def main():
             fail("usage: l4d2-webctl delete-map-package <filename> <soft|purge>")
         delete_map_package(sys.argv[2], sys.argv[3])
         return
-    fail("usage: l4d2-webctl <set-default-map|install-workshop|install-gamemaps-map|set-addon-state|delete-map-package> ...")
+    if len(sys.argv) >= 2 and sys.argv[1] == "cleanup-job-temp":
+        if len(sys.argv) != 3:
+            fail("usage: l4d2-webctl cleanup-job-temp <job_id>")
+        cleanup_job_temp(sys.argv[2])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "import-vpk":
+        if len(sys.argv) != 5:
+            fail("usage: l4d2-webctl import-vpk <map|mod> <staged_filename> <final_filename>")
+        import_vpk(sys.argv[2], sys.argv[3], sys.argv[4])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "import-export-zip":
+        if len(sys.argv) != 3:
+            fail("usage: l4d2-webctl import-export-zip <staged_filename>")
+        import_export_zip(sys.argv[2])
+        return
+    fail("usage: l4d2-webctl <set-default-map|install-workshop|install-gamemaps-map|set-addon-state|delete-map-package|cleanup-job-temp|import-vpk|import-export-zip> ...")
 
 
 if __name__ == "__main__":

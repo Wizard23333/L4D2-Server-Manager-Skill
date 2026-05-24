@@ -19,6 +19,8 @@ fi
 install -d -m 0755 "$APP_DIR"
 install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR"
 install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/jobs"
+install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/uploads"
+install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/exports"
 install -m 0755 app.py "$APP_DIR/app.py"
 install -m 0755 l4d2-webctl /usr/local/bin/l4d2-webctl
 install -m 0644 vpk_extract.py "$APP_DIR/vpk_extract.py"
@@ -33,16 +35,32 @@ alphabet = string.ascii_letters + string.digits
 print("".join(secrets.choice(alphabet) for _ in range(24)))
 PY
 )"
+  session_secret="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
   cat >"$ENV_FILE" <<EOF
 L4D2_WEB_HOST=0.0.0.0
 L4D2_WEB_PORT=8080
 L4D2_WEB_USER=admin
 L4D2_WEB_PASSWORD=$password
+L4D2_WEB_SESSION_SECRET=$session_secret
 EOF
   chmod 0600 "$ENV_FILE"
   echo "Created $ENV_FILE"
 else
   echo "Keeping existing $ENV_FILE"
+  if ! grep -q '^L4D2_WEB_SESSION_SECRET=' "$ENV_FILE"; then
+    session_secret="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+    printf '\nL4D2_WEB_SESSION_SECRET=%s\n' "$session_secret" >>"$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
+    echo "Added L4D2_WEB_SESSION_SECRET to $ENV_FILE"
+  fi
 fi
 
 visudo -cf "$SUDOERS_FILE"
