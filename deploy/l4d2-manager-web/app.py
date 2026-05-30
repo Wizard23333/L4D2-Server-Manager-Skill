@@ -1143,6 +1143,8 @@ def recover_interrupted_jobs():
             message="Install was interrupted while the Web service was offline. Re-run the install if it did not finish.",
             finished_at=int(time.time()),
         )
+        cleanup_job_temp(job["id"])
+        cleanup_staged_upload(job.get("staged_filename", ""))
 
 
 def read_package_registry():
@@ -1690,6 +1692,15 @@ def cleanup_job_temp(job_id):
     )
 
 
+def cleanup_staged_upload(staged_filename):
+    if not STAGED_UPLOAD_RE.match(staged_filename or ""):
+        return
+    try:
+        (UPLOADS_DIR / staged_filename).unlink()
+    except OSError:
+        pass
+
+
 def cancel_job(job_id):
     if not JOB_ID_RE.match(job_id):
         return {"ok": False, "message": "Invalid job id"}
@@ -1721,78 +1732,81 @@ def cancel_job(job_id):
 
 
 def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="", catalog_id=""):
-    total_items = len(item_ids)
-    if total_items < 1:
-        update_job(job_id, status="failed", message="No install items", finished_at=int(time.time()))
-        return
-    messages = []
-    for index, current_id in enumerate(item_ids, 1):
-        if job_status(job_id) == "cancelled":
-            cleanup_job_temp(job_id)
+    try:
+        total_items = len(item_ids)
+        if total_items < 1:
+            update_job(job_id, status="failed", message="No install items", finished_at=int(time.time()))
             return
-        command = install_command(source, kind, current_id)
-        if not command:
-            update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
-            return
-        result = run_install_command(job_id, command, index, total_items, current_id)
-        messages.append(result["message"])
-        if result.get("cancelled") or job_status(job_id) == "cancelled":
-            cleanup_job_temp(job_id)
+        messages = []
+        for index, current_id in enumerate(item_ids, 1):
+            if job_status(job_id) == "cancelled":
+                cleanup_job_temp(job_id)
+                return
+            command = install_command(source, kind, current_id)
+            if not command:
+                update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
+                return
+            result = run_install_command(job_id, command, index, total_items, current_id)
+            messages.append(result["message"])
+            if result.get("cancelled") or job_status(job_id) == "cancelled":
+                cleanup_job_temp(job_id)
+                update_job(
+                    job_id,
+                    status="cancelled",
+                    stage="cancelled",
+                    message="Install cancelled. Already installed earlier package parts were kept.",
+                    finished_at=int(time.time()),
+                )
+                return
+            if not result["ok"]:
+                update_job(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    message=result["message"][-2000:],
+                    finished_at=int(time.time()),
+                )
+                return
+            if result.get("filename"):
+                item_url = (
+                    STEAM_WORKSHOP_URL.format(id=current_id)
+                    if source == "workshop"
+                    else GAMEMAPS_DETAILS_URL.format(id=current_id)
+                )
+                item_title = title or result["filename"]
+                if title and total_items > 1:
+                    item_title = f"{title} ({index}/{total_items})"
+                register_installed_package(
+                    result["filename"],
+                    source,
+                    kind,
+                    current_id,
+                    item_title,
+                    url if current_id == catalog_id else item_url,
+                    [current_id],
+                )
+                addon = next((item for item in vpk_inventory() if item["filename"] == result["filename"]), None)
+                if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
+                    messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
             update_job(
                 job_id,
-                status="cancelled",
-                stage="cancelled",
-                message="Install cancelled. Already installed earlier package parts were kept.",
-                finished_at=int(time.time()),
+                items_done=index,
+                progress=int((index / total_items) * 100),
+                downloaded_bytes=0,
+                total_bytes=0,
+                message=f"Installed item {index}/{total_items}: {current_id}",
             )
-            return
-        if not result["ok"]:
-            update_job(
-                job_id,
-                status="failed",
-                stage="failed",
-                message=result["message"][-2000:],
-                finished_at=int(time.time()),
-            )
-            return
-        if result.get("filename"):
-            item_url = (
-                STEAM_WORKSHOP_URL.format(id=current_id)
-                if source == "workshop"
-                else GAMEMAPS_DETAILS_URL.format(id=current_id)
-            )
-            item_title = title or result["filename"]
-            if title and total_items > 1:
-                item_title = f"{title} ({index}/{total_items})"
-            register_installed_package(
-                result["filename"],
-                source,
-                kind,
-                current_id,
-                item_title,
-                url if current_id == catalog_id else item_url,
-                [current_id],
-            )
-            addon = next((item for item in vpk_inventory() if item["filename"] == result["filename"]), None)
-            if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
-                messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
         update_job(
             job_id,
-            items_done=index,
-            progress=int((index / total_items) * 100),
-            downloaded_bytes=0,
-            total_bytes=0,
-            message=f"Installed item {index}/{total_items}: {current_id}",
+            status="succeeded",
+            stage="finished",
+            progress=100,
+            current_item="",
+            message=("\n".join(messages) or "Install finished")[-2000:],
+            finished_at=int(time.time()),
         )
-    update_job(
-        job_id,
-        status="succeeded",
-        stage="finished",
-        progress=100,
-        current_item="",
-        message=("\n".join(messages) or "Install finished")[-2000:],
-        finished_at=int(time.time()),
-    )
+    finally:
+        cleanup_job_temp(job_id)
 
 
 def known_install_ids(source, kind, item_id):
@@ -2623,54 +2637,53 @@ def run_transfer_job(job_id):
         job = dict(JOBS.get(job_id) or {})
     staged_filename = job.get("staged_filename", "")
     staged_path = UPLOADS_DIR / staged_filename
-    if job_status(job_id) == "cancelled":
-        return
-    if not staged_path.is_file():
-        update_job(job_id, status="failed", stage="failed", message="Staged upload is missing", finished_at=int(time.time()))
-        return
-    if job.get("upload_type") == "vpk":
-        command = [
-            "/usr/bin/sudo",
-            "-n",
-            "/usr/local/bin/l4d2-webctl",
-            "import-vpk",
-            job.get("kind", "map"),
-            staged_filename,
-            job.get("final_filename", ""),
-        ]
-    else:
-        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "import-export-zip", staged_filename]
-    result = run_job_command(job_id, command, {"L4D2_WEB_JOB_ID": job_id})
-    if result.get("cancelled"):
-        update_job(job_id, status="cancelled", stage="cancelled", message="Import cancelled", finished_at=int(time.time()))
-        return
-    if not result["ok"]:
-        update_job(job_id, status="failed", stage="failed", message=result["message"][-2000:], finished_at=int(time.time()))
-        return
-    if job.get("upload_type") == "vpk":
-        register_installed_package(
-            job.get("final_filename", ""),
-            "upload",
-            job.get("kind", "map"),
-            "",
-            Path(job.get("final_filename", "")).stem,
-            "",
-            [],
-        )
-    else:
-        merge_imported_packages_from_zip(staged_path)
     try:
-        staged_path.unlink()
-    except OSError:
-        pass
-    update_job(
-        job_id,
-        status="succeeded",
-        stage="finished",
-        progress=100,
-        message=result["message"][-2000:] or "Import finished",
-        finished_at=int(time.time()),
-    )
+        if job_status(job_id) == "cancelled":
+            return
+        if not staged_path.is_file():
+            update_job(job_id, status="failed", stage="failed", message="Staged upload is missing", finished_at=int(time.time()))
+            return
+        if job.get("upload_type") == "vpk":
+            command = [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/bin/l4d2-webctl",
+                "import-vpk",
+                job.get("kind", "map"),
+                staged_filename,
+                job.get("final_filename", ""),
+            ]
+        else:
+            command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "import-export-zip", staged_filename]
+        result = run_job_command(job_id, command, {"L4D2_WEB_JOB_ID": job_id})
+        if result.get("cancelled"):
+            update_job(job_id, status="cancelled", stage="cancelled", message="Import cancelled", finished_at=int(time.time()))
+            return
+        if not result["ok"]:
+            update_job(job_id, status="failed", stage="failed", message=result["message"][-2000:], finished_at=int(time.time()))
+            return
+        if job.get("upload_type") == "vpk":
+            register_installed_package(
+                job.get("final_filename", ""),
+                "upload",
+                job.get("kind", "map"),
+                "",
+                Path(job.get("final_filename", "")).stem,
+                "",
+                [],
+            )
+        else:
+            merge_imported_packages_from_zip(staged_path)
+        update_job(
+            job_id,
+            status="succeeded",
+            stage="finished",
+            progress=100,
+            message=result["message"][-2000:] or "Import finished",
+            finished_at=int(time.time()),
+        )
+    finally:
+        cleanup_staged_upload(staged_filename)
 
 
 def create_upload_job(kind, field):
@@ -2967,13 +2980,17 @@ def render_page():
     .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
     .card { background: #fff; border: 1px solid #d9ded8; border-radius: 8px; padding: 16px; }
     .room-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+    .section-desc { margin: 4px 0 0; color: #68706a; font-size: 13px; line-height: 1.5; }
     .name { font-weight: 700; font-size: 18px; }
     .pill { border-radius: 999px; padding: 4px 9px; font-size: 12px; background: #e8ece8; color: #2c3b33; }
     .pill.ok { background: #dff1e5; color: #11602e; }
+    .pill.warn { background: #fff0c9; color: #6d4d00; }
+    .pill.danger { background: #f4d7d5; color: #733331; }
     dl { display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; margin: 16px 0; font-size: 14px; }
     dt { color: #68706a; }
     dd { margin: 0; overflow-wrap: anywhere; }
-    button { height: 36px; border: 1px solid #b8c1ba; background: #25362d; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; white-space: nowrap; }
+    button { height: 36px; border: 1px solid #b8c1ba; background: #25362d; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; white-space: nowrap; font-weight: 650; }
     button.secondary { background: #fff; color: #25362d; }
     button.danger { background: #733331; border-color: #733331; }
     button:disabled { opacity: .55; cursor: wait; }
@@ -2985,6 +3002,15 @@ def render_page():
     input[type="checkbox"] { height: auto; min-width: 0; padding: 0; }
     input[type="file"] { padding: 5px 9px; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+    .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .overview-item { background: #fff; border: 1px solid #d9ded8; border-radius: 8px; padding: 12px; display: grid; gap: 4px; }
+    .overview-label { color: #68706a; font-size: 12px; }
+    .overview-value { font-size: 22px; font-weight: 750; }
+    .tool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
+    .tool-panel { border: 1px solid #e4e7e3; border-radius: 8px; padding: 12px; display: grid; gap: 10px; align-content: start; }
+    .tool-title { font-weight: 700; }
+    .decision-list { display: grid; gap: 6px; margin: 12px 0 0; padding: 10px 12px; border: 1px solid #e4e7e3; border-radius: 8px; background: #fbfcfa; font-size: 13px; }
+    .decision-list strong { color: #25362d; }
     .catalog-results { display: grid; gap: 10px; margin-top: 12px; }
     .catalog-item { border-top: 1px solid #e4e7e3; padding-top: 10px; display: grid; gap: 8px; }
     .catalog-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
@@ -2998,18 +3024,29 @@ def render_page():
     .stack { display: grid; gap: 16px; margin-top: 16px; }
     .split-panel { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); gap: 18px; align-items: start; margin-top: 14px; }
     .section-label { font-weight: 700; margin-bottom: 8px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .filter-button { background: #fff; color: #25362d; }
+    .filter-button.active { background: #25362d; color: #fff; }
     .rows { display: grid; gap: 8px; margin-top: 12px; }
     .row { display: grid; grid-template-columns: minmax(150px, 1fr) 88px 86px 130px; gap: 8px; align-items: center; font-size: 13px; }
-    .package-row { grid-template-columns: minmax(260px, 1fr) 88px 86px minmax(180px, auto); padding: 8px 0; border-top: 1px solid #e4e7e3; }
+    .package-row { grid-template-columns: minmax(260px, 1fr) 86px 82px 82px minmax(110px, 1fr) minmax(160px, auto); padding: 10px 0; border-top: 1px solid #e4e7e3; }
     .package-row:first-child { border-top: 0; }
     .package-title { font-weight: 700; margin-bottom: 3px; }
+    .package-source { overflow-wrap: anywhere; }
     .package-actions { justify-content: flex-end; }
     .more-actions { position: relative; border: 0; padding: 0; }
     .more-actions summary { list-style: none; height: 34px; border: 1px solid #b8c1ba; border-radius: 7px; padding: 0 12px; display: inline-flex; align-items: center; background: #fff; color: #25362d; cursor: pointer; font-weight: 650; }
     .more-actions summary::-webkit-details-marker { display: none; }
     .menu-actions { position: absolute; right: 0; top: 40px; z-index: 10; min-width: 170px; display: grid; gap: 6px; padding: 8px; border: 1px solid #d9ded8; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
     .menu-actions button { width: 100%; }
-    .job { padding: 8px 0; border-top: 1px solid #e4e7e3; font-size: 13px; }
+    .job-list { display: grid; gap: 10px; margin-top: 12px; }
+    .job { padding: 10px; border: 1px solid #e4e7e3; border-radius: 8px; font-size: 13px; display: grid; gap: 8px; }
+    .job-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .job-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+    .job-field { display: grid; gap: 3px; }
+    .job-label { color: #68706a; font-size: 12px; }
+    .history-box { margin-top: 12px; border-top: 1px solid #e4e7e3; padding-top: 10px; }
+    .history-box summary { cursor: pointer; font-weight: 700; }
     .progress-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
     progress { width: min(360px, 100%); height: 14px; accent-color: #25362d; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px; }
@@ -3026,11 +3063,13 @@ def render_page():
     .process-row { display: grid; grid-template-columns: minmax(120px, 1fr) 88px minmax(80px, auto) minmax(80px, auto); gap: 8px; align-items: center; font-size: 13px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
     .muted { color: #68706a; font-size: 13px; }
+    .empty-state { border: 1px dashed #cbd3cc; border-radius: 8px; padding: 14px; color: #68706a; font-size: 13px; background: #fbfcfa; }
     #notice { min-height: 20px; }
     @media (max-width: 760px) {
       .split-panel { grid-template-columns: 1fr; }
       .package-row, .row, .process-row { grid-template-columns: 1fr; }
       .package-actions { justify-content: flex-start; }
+      .section-heading { display: grid; }
     }
   </style>
 </head>
@@ -3044,81 +3083,190 @@ def render_page():
       <button id="refresh">Refresh</button>
       <span id="notice" class="muted"></span>
     </div>
+    <section id="overview" class="overview-grid"></section>
     <section id="system" class="card"></section>
-    <section id="rooms" class="grid"></section>
+    <section class="stack">
+      <section>
+        <div class="section-heading">
+          <div>
+            <div class="name">房间管理</div>
+            <p class="section-desc">保存默认地图不会影响当前玩家；重启类操作会断开当前房间连接。</p>
+          </div>
+        </div>
+        <section id="rooms" class="grid"></section>
+      </section>
+    </section>
     <section class="stack">
       <section class="card">
-        <div class="room-head">
-          <div class="name">Search & Install</div>
+        <div class="section-heading">
+          <div>
+            <div class="name">搜索地图/Mod</div>
+            <p class="section-desc">按名称搜索 Workshop / GameMaps 候选；如果已经知道 Workshop ID，可以用右侧直装。</p>
+          </div>
           <span class="pill">Workshop / GameMaps</span>
         </div>
-        <div class="field" style="margin-top: 14px">
-          <input id="catalog-query" autocomplete="off" placeholder="Run To The Hills">
-          <select id="catalog-kind">
-            <option value="map">Map</option>
-            <option value="mod">Mod</option>
-          </select>
-          <button id="catalog-search">Search</button>
-          <input id="workshop-id" inputmode="numeric" autocomplete="off" placeholder="Workshop ID">
-          <button id="install-workshop">Install ID</button>
+        <div class="tool-grid">
+          <div class="tool-panel">
+            <div>
+              <div class="tool-title">按名称搜索</div>
+              <p class="section-desc">适合搜索三方地图、Mod 名称或关键词。</p>
+            </div>
+            <div class="field">
+              <input id="catalog-query" autocomplete="off" placeholder="Run To The Hills">
+              <select id="catalog-kind">
+                <option value="map">Map</option>
+                <option value="mod">Mod</option>
+              </select>
+              <button id="catalog-search">Search</button>
+            </div>
+          </div>
+          <div class="tool-panel">
+            <div>
+              <div class="tool-title">直接安装 Workshop ID</div>
+              <p class="section-desc">适合已确认 ID 的地图或 Mod，不经过搜索结果选择。</p>
+            </div>
+            <div class="field">
+              <input id="workshop-id" inputmode="numeric" autocomplete="off" placeholder="Workshop ID">
+              <select id="workshop-kind">
+                <option value="map">Map</option>
+                <option value="mod">Mod</option>
+              </select>
+              <button id="install-workshop">Install</button>
+            </div>
+          </div>
         </div>
-        <div class="split-panel">
-          <div>
-            <div class="section-label">Search Results</div>
-            <div id="catalog-results" class="catalog-results"></div>
-          </div>
-          <div>
-            <div class="section-label">Install Jobs</div>
-            <div id="jobs"></div>
-          </div>
+        <div style="margin-top: 16px">
+          <div class="section-label">搜索结果</div>
+          <div id="catalog-results" class="catalog-results"></div>
         </div>
       </section>
       <section class="card">
-        <div class="room-head">
-          <div class="name">Map Packages</div>
+        <div class="section-heading">
+          <div>
+            <div class="name">安装任务</div>
+            <p class="section-desc">默认只显示运行中、失败或中断的任务；成功任务折叠在历史记录里。</p>
+          </div>
+          <span id="job-count" class="pill"></span>
+        </div>
+        <div class="filters" id="job-filters">
+          <button class="filter-button active" data-job-filter="current">当前</button>
+          <button class="filter-button" data-job-filter="problem">失败/中断</button>
+          <button class="filter-button" data-job-filter="history">成功历史</button>
+          <button class="filter-button" data-job-filter="all">全部</button>
+        </div>
+        <div id="jobs" class="job-list"></div>
+      </section>
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <div class="name">地图包管理</div>
+            <p class="section-desc">管理已安装或已记录来源的地图包；删除本地文件会保留来源记录，彻底删除会移除记录。</p>
+          </div>
           <div class="actions">
-            <button id="export-selected" class="secondary">Export ZIP Selected</button>
             <span id="map-package-count" class="pill"></span>
           </div>
+        </div>
+        <div class="filters">
+          <input id="package-filter-text" autocomplete="off" placeholder="筛选名称或文件名">
+          <select id="package-filter-status">
+            <option value="all">全部状态</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+            <option value="remote">Remote</option>
+            <option value="deleted">Deleted</option>
+          </select>
+          <select id="package-filter-source">
+            <option value="all">全部来源</option>
+            <option value="workshop">Workshop</option>
+            <option value="gamemaps">GameMaps</option>
+            <option value="local">Local</option>
+          </select>
+          <select id="package-filter-record">
+            <option value="all">全部记录</option>
+            <option value="with">有来源记录</option>
+            <option value="without">无来源记录</option>
+          </select>
         </div>
         <div id="map-packages" class="rows"></div>
       </section>
       <section class="card">
-        <div class="room-head">
-          <div class="name">Transfer</div>
-          <span class="pill">Manifest / VPK / ZIP</span>
+        <div class="section-heading">
+          <div>
+            <div class="name">迁移</div>
+            <p class="section-desc">默认用 Manifest 迁移来源记录；不行再用 ZIP；只有单文件时才用 VPK。</p>
+          </div>
+          <span class="pill">推荐 Manifest / 备选 ZIP / 手工 VPK</span>
         </div>
-        <div class="field" style="margin-top: 14px">
-          <button id="manifest-export">Export JSON Manifest</button>
-          <input id="manifest-file" type="file" accept=".json,application/json">
-          <button id="manifest-import" class="secondary">Import JSON Manifest</button>
+        <div class="decision-list">
+          <div><strong>跨服务器迁移：</strong>优先 Manifest，不传输大文件。</div>
+          <div><strong>目标服务器无法在线拉取：</strong>用完整 ZIP 兜底。</div>
+          <div><strong>手头只有单个文件：</strong>用 VPK 手工导入。</div>
         </div>
-        <form id="upload-form" class="field" style="margin-top: 14px">
-          <input id="upload-file" name="file" type="file" accept=".vpk,.zip">
-          <select id="upload-kind" name="kind">
-            <option value="map">Map package</option>
-            <option value="mod">Mod</option>
-          </select>
-          <button id="upload-submit" type="submit">Upload & Import</button>
-        </form>
+        <div class="tool-grid">
+          <div class="tool-panel">
+            <div>
+              <div class="tool-title">推荐方案：Manifest 迁移</div>
+              <p class="section-desc">只迁移来源记录和可重装信息，不传输 .vpk 文件本体；适合公网、跨机房和低带宽场景。目标服务器需要能访问对应来源，来源记录也必须有效。</p>
+            </div>
+            <div class="field">
+              <button id="manifest-export">导出来源记录</button>
+              <input id="manifest-file" type="file" accept=".json,application/json">
+              <button id="manifest-import" class="secondary">导入来源记录</button>
+            </div>
+          </div>
+          <div class="tool-panel">
+            <div>
+              <div class="tool-title">备选方案：完整 ZIP 迁移</div>
+              <p class="section-desc">迁移 .vpk 文件本体和元数据；适合来源失效、目标服务器无法在线拉取或少量应急包。体积较大，受服务器出网带宽影响，不适合大量地图长期批量迁移。</p>
+            </div>
+            <div class="field">
+              <button id="export-selected" class="secondary">导出选中地图包 ZIP</button>
+            </div>
+            <form id="zip-upload-form" class="field">
+              <input id="zip-upload-file" name="file" type="file" accept=".zip">
+              <button id="zip-upload-submit" class="secondary" type="submit">导入迁移 ZIP</button>
+            </form>
+          </div>
+          <div class="tool-panel">
+            <div>
+              <div class="tool-title">手工导入本地文件</div>
+              <p class="section-desc">适合已经拿到单个 .vpk 文件时手动补包，不作为主迁移策略。</p>
+            </div>
+            <form id="vpk-upload-form" class="field">
+              <input id="vpk-upload-file" name="file" type="file" accept=".vpk">
+              <select id="vpk-upload-kind" name="kind">
+                <option value="map">Map package</option>
+                <option value="mod">Mod</option>
+              </select>
+              <button id="vpk-upload-submit" type="submit">导入 VPK</button>
+            </form>
+          </div>
+        </div>
       </section>
       <section class="card">
-        <div class="room-head">
-          <div class="name">Mod Management</div>
+        <div class="section-heading">
+          <div>
+            <div class="name">Mod 管理</div>
+            <p class="section-desc">启用或禁用非地图 VPK；远端记录可在需要时重新安装。</p>
+          </div>
           <span id="addon-count" class="pill"></span>
         </div>
         <div id="addons" class="rows"></div>
       </section>
     </section>
     <section class="maps card">
-      <div class="room-head">
-        <div class="name">Installed Maps</div>
+      <div class="section-heading">
+        <div>
+          <div class="name">已安装地图</div>
+          <p class="section-desc">按战役分组展示当前可选择的章节地图，Other 中是未识别战役的地图。</p>
+        </div>
         <span id="map-count" class="pill"></span>
       </div>
       <div id="maps" class="maps-list"></div>
     </section>
   </main>
   <script>
+    const overviewEl = document.querySelector("#overview");
     const systemEl = document.querySelector("#system");
     const roomsEl = document.querySelector("#rooms");
     const mapsEl = document.querySelector("#maps");
@@ -3128,14 +3276,18 @@ def render_page():
     const addonCountEl = document.querySelector("#addon-count");
     const addonsEl = document.querySelector("#addons");
     const jobsEl = document.querySelector("#jobs");
+    const jobCountEl = document.querySelector("#job-count");
     const catalogResultsEl = document.querySelector("#catalog-results");
     const noticeEl = document.querySelector("#notice");
     const exportSelectedButton = document.querySelector("#export-selected");
     const manifestExportButton = document.querySelector("#manifest-export");
     const manifestImportButton = document.querySelector("#manifest-import");
-    const uploadForm = document.querySelector("#upload-form");
+    const zipUploadForm = document.querySelector("#zip-upload-form");
+    const vpkUploadForm = document.querySelector("#vpk-upload-form");
     let currentState = null;
     let refreshTimer = null;
+    let jobFilter = "current";
+    let packageFilters = {text: "", status: "all", source: "all", record: "all"};
 
     async function apiFetch(input, init = {}) {
       const res = await fetch(input, {credentials: "same-origin", ...init});
@@ -3150,6 +3302,28 @@ def render_page():
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[ch]));
+    }
+
+    function renderOverview(data) {
+      const rooms = data.rooms || [];
+      const addons = data.addons || [];
+      const jobs = data.jobs || [];
+      const onlineRooms = rooms.filter(room => room.active === "active" && room.port_listening).length;
+      const runningJobs = jobs.filter(job => job.status === "queued" || job.status === "running").length;
+      const problemJobs = jobs.filter(job => job.status === "failed" || job.status === "interrupted").length;
+      const mapPackages = addons.filter(addon => addon.kind === "map").length;
+      const disabledMods = addons.filter(addon => addon.kind !== "map" && addon.state === "disabled").length;
+      const items = [
+        ["在线房间", `${onlineRooms}/${rooms.length}`],
+        ["运行中任务", runningJobs],
+        ["失败/中断任务", problemJobs],
+        ["地图包", mapPackages],
+        ["禁用 Mod", disabledMods],
+      ];
+      overviewEl.innerHTML = items.map(([label, value]) => `<div class="overview-item">
+        <div class="overview-label">${esc(label)}</div>
+        <div class="overview-value">${esc(value)}</div>
+      </div>`).join("");
     }
 
     function roomCard(room) {
@@ -3172,10 +3346,11 @@ def render_page():
           <select data-map-select="${room.id}"></select>
           <button data-save="${room.id}">Save</button>
           <details class="more-actions">
-            <summary>More</summary>
+            <summary>危险操作</summary>
             <div class="menu-actions">
-              <button class="secondary" data-save-restart="${room.id}">Save & Restart</button>
-              <button class="secondary" data-restart="${room.id}">Restart Room</button>
+              <div class="muted">会重启房间，当前玩家可能断开。</div>
+              <button class="danger" data-save-restart="${room.id}">Save & Restart</button>
+              <button class="danger" data-restart="${room.id}">Restart Room</button>
             </div>
           </details>
         </div>
@@ -3186,7 +3361,7 @@ def render_page():
       const mods = addons.filter(addon => addon.kind !== "map");
       addonCountEl.textContent = `${mods.length} vpks`;
       if (!mods.length) {
-        addonsEl.innerHTML = `<div class="muted">No VPK addons found.</div>`;
+        addonsEl.innerHTML = `<div class="empty-state">当前没有可管理的非地图 VPK。上传或安装 Mod 后会出现在这里。</div>`;
         return;
       }
       addonsEl.innerHTML = mods.map(addon => {
@@ -3195,8 +3370,8 @@ def render_page():
         const label = addon.state === "enabled" ? "Disable" : "Enable";
         const sizeMb = (addon.size / 1024 / 1024).toFixed(1);
         const openLink = addon.url ? `<a href="${esc(addon.url)}" target="_blank" rel="noreferrer">Open</a>` : "";
-        const install = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">Install</button>` : "";
-        const remove = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">Remove Record</button>` : "";
+        const install = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">按来源重新安装</button>` : "";
+        const remove = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">删除来源记录</button>` : "";
         const stateButton = remote ? "" : `<button data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>`;
         const sizeText = remote ? "not downloaded" : `${sizeMb} MB`;
         return `<div class="row">
@@ -3213,26 +3388,32 @@ def render_page():
 
     function renderMapPackages(addons) {
       const packages = addons.filter(addon => addon.kind === "map");
-      mapPackageCountEl.textContent = `${packages.length} vpks`;
+      const filtered = packages.filter(packageMatchesFilters);
+      mapPackageCountEl.textContent = `${filtered.length}/${packages.length} vpks`;
       if (!packages.length) {
-        mapPackagesEl.innerHTML = `<div class="muted">No map packages found.</div>`;
+        mapPackagesEl.innerHTML = `<div class="empty-state">当前没有地图包。可以先搜索 Workshop 地图，导入来源记录，或手工导入 VPK。</div>`;
         return;
       }
-      mapPackagesEl.innerHTML = packages.map(addon => {
+      if (!filtered.length) {
+        mapPackagesEl.innerHTML = `<div class="empty-state">没有符合筛选条件的地图包。可以清空名称、状态或来源筛选。</div>`;
+        return;
+      }
+      mapPackagesEl.innerHTML = filtered.map(addon => {
         const target = addon.state === "enabled" ? "disabled" : "enabled";
         const label = addon.state === "enabled" ? "Disable" : "Enable";
         const sizeMb = (addon.size / 1024 / 1024).toFixed(1);
-        const maps = addon.maps && addon.maps.length ? addon.maps.join(", ") : "mission only";
+        const mapCount = addon.maps && addon.maps.length ? addon.maps.length : 0;
+        const maps = mapCount ? addon.maps.join(", ") : "mission only";
         const deleted = addon.state === "deleted";
         const remote = addon.state === "remote";
         const openLink = addon.url ? `<a href="${esc(addon.url)}" target="_blank" rel="noreferrer">Open</a>` : "";
         const exportLink = deleted || remote ? "" : `<button class="secondary" data-package-export="${esc(addon.filename)}">Export ZIP</button>`;
         const reinstall = !remote && addon.reinstallable ? `<button data-package-reinstall="${esc(addon.filename)}">Reinstall</button>` : "";
-        const installRemote = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">Install</button>` : "";
-        const removeRemote = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">Remove Record</button>` : "";
+        const installRemote = remote && addon.reinstallable ? `<button data-manifest-install="${esc(addon.filename)}">按来源重新安装</button>` : "";
+        const removeRemote = remote ? `<button class="secondary" data-manifest-remove="${esc(addon.filename)}">删除来源记录</button>` : "";
         const disable = deleted ? "" : `<button class="secondary" data-addon="${esc(addon.filename)}" data-addon-state="${target}">${label}</button>`;
-        const softDelete = deleted ? "" : `<button class="secondary" data-package-delete="${esc(addon.filename)}" data-package-mode="soft">Soft Delete</button>`;
-        const purgeDelete = `<button class="danger" data-package-delete="${esc(addon.filename)}" data-package-mode="purge">Purge Delete</button>`;
+        const softDelete = deleted ? "" : `<button class="danger" data-package-delete="${esc(addon.filename)}" data-package-mode="soft">删除本地文件</button>`;
+        const purgeDelete = `<button class="danger" data-package-delete="${esc(addon.filename)}" data-package-mode="purge">彻底删除</button>`;
         const source = addon.source && addon.catalog_id ? `${addon.source} ${addon.catalog_id}` : "local package";
         const title = addon.title && addon.title !== addon.filename ? addon.title : addon.filename;
         const statusText = remote ? "remote" : (deleted ? "deleted" : addon.state);
@@ -3252,31 +3433,98 @@ def render_page():
               <span class="package-title">${esc(title)}</span>
             </label>
             <div class="muted mono">${esc(addon.filename)}</div>
-            <div class="muted">${esc(maps)}</div>
-            <div class="muted">${esc(source)}</div>
+            <div class="muted mono">${esc(maps)}</div>
           </div>
           <div>${statusText}</div>
+          <div>${mapCount || "-"}</div>
           <div>${sizeText}</div>
+          <div class="muted package-source">${esc(source)}</div>
           <div class="actions package-actions">${openLink}${exportLink}${installRemote}${removeRemote}${reinstall}${moreMenu}</div>
         </div>`;
       }).join("");
     }
 
+    function packageMatchesFilters(addon) {
+      const text = packageFilters.text.toLowerCase();
+      const source = addon.source || "local";
+      const hasRecord = Boolean(addon.source && addon.catalog_id);
+      if (text) {
+        const haystack = [addon.title, addon.filename, addon.catalog_id, (addon.maps || []).join(" ")].join(" ").toLowerCase();
+        if (!haystack.includes(text)) return false;
+      }
+      if (packageFilters.status !== "all" && addon.state !== packageFilters.status) return false;
+      if (packageFilters.source !== "all" && source !== packageFilters.source) return false;
+      if (packageFilters.record === "with" && !hasRecord) return false;
+      if (packageFilters.record === "without" && hasRecord) return false;
+      return true;
+    }
+
     function renderJobs(jobs) {
+      const currentJobs = jobs.filter(job => ["queued", "running", "failed", "interrupted"].includes(job.status));
+      const problemJobs = jobs.filter(job => ["failed", "interrupted"].includes(job.status));
+      const historyJobs = jobs.filter(job => job.status === "succeeded");
+      const filtered = jobFilter === "current" ? currentJobs
+        : jobFilter === "problem" ? problemJobs
+        : jobFilter === "history" ? historyJobs.slice(0, 5)
+        : jobs;
+      jobCountEl.textContent = `${currentJobs.length} current / ${problemJobs.length} problem`;
+      document.querySelectorAll("[data-job-filter]").forEach(button => {
+        button.classList.toggle("active", button.dataset.jobFilter === jobFilter);
+      });
       if (!jobs.length) {
-        jobsEl.innerHTML = `<div class="muted">No install jobs yet.</div>`;
+        jobsEl.innerHTML = `<div class="empty-state">当前没有安装、导出或导入任务。</div>`;
         return;
       }
-      jobsEl.innerHTML = jobs.map(job => `<div class="job">
-        <strong>${esc(job.status)}</strong>
-        <span class="mono">${esc(job.type || job.source || "workshop")} ${esc(job.kind)} ${esc(job.catalog_id || job.workshop_id || job.export_filename || "")}</span>
-        ${job.status === "queued" || job.status === "running" ? `<button class="secondary" data-job-cancel="${esc(job.id)}">Cancel</button>` : ""}
-        ${job.type === "export" && job.status === "succeeded" && job.download_url ? `<a href="${esc(job.download_url)}">Download</a>` : ""}
-        ${job.title ? `<div>${esc(job.title)}</div>` : ""}
-        ${job.install_ids && job.install_ids.length > 1 ? `<div class="muted mono">packages ${job.install_ids.map(esc).join(", ")}</div>` : ""}
+      const emptyCopy = jobFilter === "current"
+        ? "当前没有运行中、失败或中断任务。成功任务已折叠到历史记录。"
+        : jobFilter === "problem"
+          ? "当前没有失败或中断任务。"
+          : jobFilter === "history"
+            ? "还没有成功任务历史。"
+            : "没有符合条件的任务。";
+      const body = filtered.length ? filtered.map(jobCard).join("") : `<div class="empty-state">${emptyCopy}</div>`;
+      const history = jobFilter === "current" && historyJobs.length
+        ? `<details class="history-box">
+            <summary>History · 最近 ${Math.min(5, historyJobs.length)} 条成功任务</summary>
+            <div class="job-list">${historyJobs.slice(0, 5).map(jobCard).join("")}</div>
+          </details>`
+        : "";
+      jobsEl.innerHTML = body + history;
+    }
+
+    function jobCard(job) {
+      const type = job.type || job.source || "workshop";
+      const target = job.title || job.catalog_id || job.workshop_id || job.export_filename || "unknown";
+      const idText = job.catalog_id || job.workshop_id || job.export_filename || job.id || "";
+      const canCancel = job.status === "queued" || job.status === "running";
+      const download = job.type === "export" && job.status === "succeeded" && job.download_url
+        ? `<a href="${esc(job.download_url)}">Download</a>`
+        : "";
+      const statusClass = job.status === "succeeded" ? "ok"
+        : ["failed", "interrupted"].includes(job.status) ? "danger"
+        : ["queued", "running"].includes(job.status) ? "warn"
+        : "";
+      const packages = job.install_ids && job.install_ids.length > 1
+        ? `<div class="muted mono">packages ${job.install_ids.map(esc).join(", ")}</div>`
+        : "";
+      return `<div class="job">
+        <div class="job-head">
+          <strong>${esc(target)}</strong>
+          <div class="actions">
+            <span class="pill ${statusClass}">${esc(job.status)}</span>
+            ${canCancel ? `<button class="secondary" data-job-cancel="${esc(job.id)}">Cancel</button>` : ""}
+            ${download}
+          </div>
+        </div>
+        <div class="job-grid">
+          <div class="job-field"><span class="job-label">任务类型</span><span>${esc(type)} ${esc(job.kind || "")}</span></div>
+          <div class="job-field"><span class="job-label">目标</span><span class="mono">${esc(idText)}</span></div>
+          <div class="job-field"><span class="job-label">阶段</span><span>${esc(job.stage || "done")}</span></div>
+        </div>
+        ${packages}
         ${jobProgress(job)}
-        <div class="muted">${esc(job.message)}</div>
-      </div>`).join("");
+        <div class="muted">${esc(job.message || "")}</div>
+      </div>`;
     }
 
     function formatBytes(value) {
@@ -3392,7 +3640,7 @@ def render_page():
 
     function renderCatalogResults(results) {
       if (!results.length) {
-        catalogResultsEl.innerHTML = `<div class="muted">No matching maps or mods found. Steam or GameMaps search may be unavailable; try a Workshop ID if you know it.</div>`;
+        catalogResultsEl.innerHTML = `<div class="empty-state">没有找到匹配结果。可以换一个关键词，或在右侧直接输入 Workshop ID 安装。</div>`;
         return;
       }
       catalogResultsEl.innerHTML = results.map(item => {
@@ -3488,6 +3736,7 @@ def render_page():
       if (!res.ok) throw new Error("Failed to load state");
       const data = await res.json();
       currentState = data;
+      renderOverview(data);
       renderSystem(data.system);
       roomsEl.innerHTML = data.rooms.map(roomCard).join("");
       fillMapSelects(data);
@@ -3534,7 +3783,7 @@ def render_page():
 
     async function installWorkshop() {
       const workshopId = document.querySelector("#workshop-id").value.trim();
-      const kind = document.querySelector("#catalog-kind").value;
+      const kind = document.querySelector("#workshop-kind").value;
       noticeEl.textContent = "Queueing install...";
       const res = await apiFetch("/api/workshop/install", {
         method: "POST",
@@ -3593,8 +3842,8 @@ def render_page():
 
     async function deleteMapPackage(filename, mode) {
       const prompt = mode === "purge"
-        ? `Permanently delete ${filename}? This removes local files and the saved source record. Reinstalling later will require a fresh search.`
-        : `Soft delete ${filename}? This removes local files but keeps the source link for reinstall.`;
+        ? `彻底删除 ${filename}？这会删除本地文件和来源记录，之后需要重新搜索或重新导入才能安装回来。`
+        : `删除本地文件 ${filename}？这会移除本地 VPK 和提取文件，但保留来源记录，之后可以用 Reinstall 安装回来。`;
       if (!confirm(prompt)) return;
       noticeEl.textContent = "Deleting package...";
       const res = await apiFetch("/api/map-package/delete", {
@@ -3661,10 +3910,10 @@ def render_page():
     async function exportManifestSelected() {
       const selected = selectedManifestRecords();
       if (!selected.length) {
-        noticeEl.textContent = "Select at least one map or mod record.";
+        noticeEl.textContent = "请先选择至少一个地图或 Mod 来源记录。";
         return;
       }
-      noticeEl.textContent = "Preparing JSON manifest...";
+      noticeEl.textContent = "正在准备来源记录...";
       const body = new URLSearchParams();
       selected.forEach(filename => body.append("filename", filename));
       const res = await apiFetch("/api/manifest/export", {
@@ -3674,7 +3923,7 @@ def render_page():
       });
       if (!res.ok) {
         const data = await res.json();
-        noticeEl.textContent = data.message || "Manifest export failed";
+        noticeEl.textContent = data.message || "来源记录导出失败";
         return;
       }
       const blob = await res.blob();
@@ -3689,21 +3938,21 @@ def render_page():
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      noticeEl.textContent = "JSON manifest exported.";
+      noticeEl.textContent = "来源记录已导出。";
     }
 
     async function importManifest() {
       const file = document.querySelector("#manifest-file").files[0];
       if (!file) {
-        noticeEl.textContent = "Choose a manifest .json file first.";
+        noticeEl.textContent = "请先选择来源记录 .json 文件。";
         return;
       }
       const form = new FormData();
       form.append("file", file);
-      noticeEl.textContent = "Importing manifest...";
+      noticeEl.textContent = "正在导入来源记录...";
       const res = await apiFetch("/api/manifest/import", {method: "POST", body: form});
       const data = await res.json();
-      noticeEl.textContent = data.message || (res.ok ? "Manifest imported" : "Manifest import failed");
+      noticeEl.textContent = data.message || (res.ok ? "来源记录已导入" : "来源记录导入失败");
       if (res.ok) {
         document.querySelector("#manifest-file").value = "";
         await loadState();
@@ -3711,7 +3960,7 @@ def render_page():
     }
 
     async function installManifestRecord(filename) {
-      noticeEl.textContent = "Queueing manifest install...";
+      noticeEl.textContent = "正在按来源创建重新安装任务...";
       const res = await apiFetch("/api/manifest/install", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
@@ -3723,8 +3972,8 @@ def render_page():
     }
 
     async function removeManifestRecord(filename) {
-      if (!confirm(`Remove saved source record for ${filename}? This does not delete any local VPK file.`)) return;
-      noticeEl.textContent = "Removing record...";
+      if (!confirm(`删除 ${filename} 的来源记录？这不会删除本地 VPK 文件，但之后需要重新搜索或重新导入来源记录。`)) return;
+      noticeEl.textContent = "正在删除来源记录...";
       const res = await apiFetch("/api/manifest/remove-record", {
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
@@ -3735,22 +3984,42 @@ def render_page():
       await loadState();
     }
 
-    async function uploadImport(event) {
+    async function uploadZipImport(event) {
       event.preventDefault();
-      const file = document.querySelector("#upload-file").files[0];
+      const file = document.querySelector("#zip-upload-file").files[0];
       if (!file) {
-        noticeEl.textContent = "Choose a .vpk or exported .zip first.";
+        noticeEl.textContent = "请先选择迁移 ZIP 文件。";
         return;
       }
       const form = new FormData();
       form.append("file", file);
-      form.append("kind", document.querySelector("#upload-kind").value);
-      noticeEl.textContent = "Uploading...";
+      form.append("kind", "map");
+      noticeEl.textContent = "正在导入迁移 ZIP...";
       const res = await apiFetch("/api/upload", {method: "POST", body: form});
       const data = await res.json();
       noticeEl.textContent = data.message;
       if (res.ok) {
-        document.querySelector("#upload-file").value = "";
+        document.querySelector("#zip-upload-file").value = "";
+        await loadState();
+      }
+    }
+
+    async function uploadVpkImport(event) {
+      event.preventDefault();
+      const file = document.querySelector("#vpk-upload-file").files[0];
+      if (!file) {
+        noticeEl.textContent = "请先选择单个 .vpk 文件。";
+        return;
+      }
+      const form = new FormData();
+      form.append("file", file);
+      form.append("kind", document.querySelector("#vpk-upload-kind").value);
+      noticeEl.textContent = "正在导入 VPK...";
+      const res = await apiFetch("/api/upload", {method: "POST", body: form});
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      if (res.ok) {
+        document.querySelector("#vpk-upload-file").value = "";
         await loadState();
       }
     }
@@ -3765,6 +4034,28 @@ def render_page():
 
     document.querySelector("#logout").addEventListener("click", logout);
     document.querySelector("#refresh").addEventListener("click", loadState);
+    document.querySelector("#job-filters").addEventListener("click", event => {
+      const selected = event.target.dataset.jobFilter;
+      if (!selected) return;
+      jobFilter = selected;
+      renderJobs((currentState && currentState.jobs) || []);
+    });
+    document.querySelector("#package-filter-text").addEventListener("input", event => {
+      packageFilters.text = event.target.value.trim();
+      renderMapPackages((currentState && currentState.addons) || []);
+    });
+    document.querySelector("#package-filter-status").addEventListener("change", event => {
+      packageFilters.status = event.target.value;
+      renderMapPackages((currentState && currentState.addons) || []);
+    });
+    document.querySelector("#package-filter-source").addEventListener("change", event => {
+      packageFilters.source = event.target.value;
+      renderMapPackages((currentState && currentState.addons) || []);
+    });
+    document.querySelector("#package-filter-record").addEventListener("change", event => {
+      packageFilters.record = event.target.value;
+      renderMapPackages((currentState && currentState.addons) || []);
+    });
     const catalogSearchButton = document.querySelector("#catalog-search");
     document.querySelector("#catalog-search").addEventListener("click", event => {
       runCatalogSearch(event.target);
@@ -3884,10 +4175,15 @@ def render_page():
       event.target.disabled = true;
       importManifest().finally(() => event.target.disabled = false);
     });
-    uploadForm.addEventListener("submit", event => {
-      const button = document.querySelector("#upload-submit");
+    zipUploadForm.addEventListener("submit", event => {
+      const button = document.querySelector("#zip-upload-submit");
       button.disabled = true;
-      uploadImport(event).finally(() => button.disabled = false);
+      uploadZipImport(event).finally(() => button.disabled = false);
+    });
+    vpkUploadForm.addEventListener("submit", event => {
+      const button = document.querySelector("#vpk-upload-submit");
+      button.disabled = true;
+      uploadVpkImport(event).finally(() => button.disabled = false);
     });
     loadState().catch(err => noticeEl.textContent = err.message);
   </script>
