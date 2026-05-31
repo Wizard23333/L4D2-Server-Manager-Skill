@@ -680,9 +680,16 @@ sv_region 4                    // 设置为亚洲区 (4)，国内玩家搜得更
 
 **2. 私密/组内模式（仅限朋友）：**
 ```hlsl
+sv_steamgroup "46097240"       // 使用短 groupID，不要直接填 groupID64
 sv_steamgroup_exclusive 1      // 仅限 Steam 成员
 sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 ```
+
+**Steam 组 ID 易错点：**
+- L4D2 的 `sv_steamgroup` 在实际验证中需要使用 Steam 组的短 `groupID`，不要直接填 XML 里的 `groupID64`。
+- 如果只有 `groupID64`，可用公式换算短 ID：`groupID = groupID64 - 103582791429521408`。
+- 例：`https://steamcommunity.com/groups/l4d2wht` 的 `groupID64` 是 `103582791475618648`，L4D2 `sv_steamgroup` 应填写 `46097240`。
+- 修改后重启房间，并用游戏客户端重启 Steam/L4D2 后再看 Steam 组服务器列表。列表刷新有延迟，先用 `connect SERVER_IP:27015` 验证直连。
 
 **修改后必须重启对应房间的服务生效。**
 
@@ -698,9 +705,9 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 16. 申请与配置 GSLT 提升权重
+## 16. 申请与配置 GSLT 注意事项
 
-**GSLT (Game Server Login Token)** 是让服务器获得“官方身份认证”的关键，能显著提升全球搜索排名。
+**GSLT (Game Server Login Token)** 可以让部分 Source/Steam 服务器获得持久身份，但不要把它和 L4D2 的 Steam 组可见性混为一谈。实际排障中，Steam 组服务器看不到的关键问题是 `sv_steamgroup` 使用了 `groupID64`，改为短 `groupID` 后恢复正常。
 
 ### A. 申请步骤
 1. 访问 [Steam 游戏服务器账户管理](https://steamcommunity.com/dev/managegameservers)。
@@ -708,8 +715,14 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 3. 生成并复制令牌。
 
 ### B. 配置方法
-在启动脚本（如 `start_l4d2.sh`）的启动命令末尾增加：
-`+sv_setsteamaccount YOUR_GSLT_TOKEN`
+如需测试 GSLT，先把 token 保存到服务器私有 env 文件，不要写入仓库或聊天记录。当前 Linux L4D2 dedicated server 环境中，启动参数 `+sv_setsteamaccount YOUR_GSLT_TOKEN` 曾返回 `Unknown command "sv_setsteamaccount"`，因此不要把它作为 Steam 组可见性的主修复手段。
+
+排障优先级：
+1. 确认 `sv_steamgroup` 使用短 `groupID`。
+2. 确认 `sv_steamgroup_exclusive` 和 `sv_allow_lobby_connect_only` 符合目标可见性。
+3. 确认 `27015/udp`、`27016/udp` 在云安全组和 UFW 都已放行。
+4. 用 A2S 查询或游戏内 `connect SERVER_IP:PORT` 先验证直连。
+5. 再考虑 GSLT、Steam master 列表延迟或客户端 Steam 组列表缓存。
 
 ---
-*Generated on: 2026-05-01*
+*Generated on: 2026-05-31*

@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -209,6 +210,21 @@ def chown_steam(path):
     subprocess.run(["/usr/bin/chown", "-R", "steam:steam", str(path)], check=False)
 
 
+def open_with_retries(request, *, timeout, attempts=4, label="request"):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, http.client.RemoteDisconnected, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            time.sleep(min(2 ** (attempt - 1), 8))
+    fail(f"{label} failed after {attempts} attempts: {last_error}")
+
+
 def fetch_workshop_details(workshop_id):
     data = urllib.parse.urlencode(
         {"itemcount": "1", "publishedfileids[0]": workshop_id}
@@ -216,9 +232,14 @@ def fetch_workshop_details(workshop_id):
     request = urllib.request.Request(
         "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/",
         data=data,
+        headers={
+            "User-Agent": "L4D2Manager/0.1",
+            "Accept": "application/json",
+            "Connection": "close",
+        },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_with_retries(request, timeout=30, label="Steam API lookup") as response:
         payload = json.loads(response.read().decode("utf-8"))
     details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
     if str(details.get("result")) != "1":
@@ -232,7 +253,7 @@ def fetch_workshop_details(workshop_id):
 def download_file(url, destination, allowed_hosts=None):
     request = urllib.request.Request(url, headers={"User-Agent": "L4D2Manager/0.1"})
     tmp = destination.with_suffix(destination.suffix + ".part")
-    with urllib.request.urlopen(request, timeout=60) as response, open(tmp, "wb") as handle:
+    with open_with_retries(request, timeout=60, label="Workshop file download") as response, open(tmp, "wb") as handle:
         final_url = response.geturl()
         if allowed_hosts:
             host = urllib.parse.urlparse(final_url).netloc.lower()
