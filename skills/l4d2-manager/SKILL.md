@@ -624,7 +624,55 @@ curl -o "D:\Steam\steamapps\common\Left 4 Dead 2\left4dead2\addons\workshop_back
 
 ---
 
-## 14. 多实例（多房间）配置指南
+## 14. SourceMod 服务器插件栈
+
+当需要安装服务器侧功能插件（统计、血量显示、投票、公告）时，优先使用 **MetaMod:Source + SourceMod**，不要把这类功能混进 Workshop VPK 管理。
+
+### A. 保守稳定包
+默认推荐先安装以下组合：
+- **MetaMod:Source + SourceMod**：服务器插件基础框架。
+- **Left 4 DHooks Direct**：很多 L4D2 SourceMod 插件依赖的 hooks/gamedata。
+- **Kill Counter**：击杀/统计显示。当前保守包使用 `l4d_kill.smx`。
+- **Infected Health Gauge**：Tank、Witch、特感血量显示。当前保守包使用 `l4d_infected_hp.smx`。
+- **Advertisements / Welcome Message**：进服欢迎语和定时公告。当前保守包使用 `advertisements.smx` 与 `configs/advertisements.txt`。
+- **Custom Votes**：第一版不装第三方插件，先启用 SourceMod 自带 `basevotes.smx`、`mapchooser.smx`、`nominations.smx`、`rockthevote.smx`。
+
+安装注意：
+- L4D2 Linux dedicated server 是 32-bit。`metamod.vdf` 应指向 `../left4dead2/addons/metamod/bin/server`，并禁用或删除官方包里的 `metamod_x64.vdf`，否则会报 `wrong ELF class: ELFCLASS64`。
+- SourceMod stable tarball 不只包含 `addons/sourcemod`，还包含 `cfg/sourcemod/sourcemod.cfg`；如果日志出现 `couldn't exec sourcemod/sourcemod.cfg`，需要补解压 `cfg/sourcemod/` 到 `/opt/l4d2/left4dead2/cfg/sourcemod/`。
+- 如果服务器访问 `raw.githubusercontent.com` 很慢，优先走 GitHub contents API 下载小型 `.smx`/配置文件，避免安装任务卡住。
+
+### B. Web 面板管理方式
+Web 面板的“服务器插件”栏用于管理 SourceMod `.smx` 插件：
+- 安装保守插件包会备份旧的 `addons/metamod`、`addons/sourcemod`、`addons/metamod.vdf`。
+- 启用/禁用插件通过在 `addons/sourcemod/plugins/` 与 `addons/sourcemod/plugins/disabled/` 间移动 `.smx` 实现。
+- 启用/禁用后需要重启对应房间；两个房间共享同一个 `left4dead2` 目录，因此 SourceMod 插件会同时影响两个房间。
+
+### C. 常用验证命令
+安装后先做只读验证：
+```bash
+ssh myubuntu "sudo systemctl status l4d2 l4d2_2 --no-pager"
+ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"
+ssh myubuntu "sudo ss -H -lunp 'sport = :27016'"
+ssh myubuntu "sudo find /opt/l4d2/left4dead2/addons/sourcemod/plugins -maxdepth 2 -type f -name '*.smx' | sort"
+```
+
+游戏内或服务器控制台验证：
+```text
+meta version
+sm version
+sm plugins list
+```
+
+### D. 回滚
+如果安装后房间崩溃或无法加载：
+- 先从 Web 面板禁用可疑 `.smx` 并重启两个房间。
+- 如果基础框架本身有问题，恢复最近的 `server_plugins_backup_YYYYmmddHHMMSS` 目录中的 `metamod`、`sourcemod`、`metamod.vdf`。
+- 回滚、删除插件或重启房间前，需要确认影响范围和当前是否有人在线。
+
+---
+
+## 15. 多实例（多房间）配置指南
 
 为了让更多朋友同时玩，可以在同一台服务器上运行多个 L4D2 实例。
 
@@ -695,7 +743,7 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 15. 常用管理指令汇总
+## 16. 常用管理指令汇总
 
 - **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
 - **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
@@ -705,7 +753,7 @@ sv_allow_lobby_connect_only 1  // 必须通过大厅组队才能进入
 
 ---
 
-## 16. 申请与配置 GSLT 注意事项
+## 17. 申请与配置 GSLT 注意事项
 
 **GSLT (Game Server Login Token)** 可以让部分 Source/Steam 服务器获得持久身份，但不要把它和 L4D2 的 Steam 组可见性混为一谈。实际排障中，Steam 组服务器看不到的关键问题是 `sv_steamgroup` 使用了 `groupID64`，改为短 `groupID` 后恢复正常。
 

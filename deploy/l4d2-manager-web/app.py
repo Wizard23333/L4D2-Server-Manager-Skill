@@ -43,6 +43,9 @@ MAPS_DIR = Path("/opt/l4d2/left4dead2/maps")
 MISSIONS_DIR = Path("/opt/l4d2/left4dead2/missions")
 ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons")
 DISABLED_ADDONS_DIR = Path("/opt/l4d2/left4dead2/addons_disabled")
+SOURCEMOD_DIR = ADDONS_DIR / "sourcemod"
+SM_PLUGINS_DIR = SOURCEMOD_DIR / "plugins"
+SM_DISABLED_DIR = SM_PLUGINS_DIR / "disabled"
 STATE_DIR = Path(os.environ.get("L4D2_WEB_STATE_DIR", "/var/lib/l4d2-manager-web"))
 JOBS_DIR = Path(os.environ.get("L4D2_WEB_JOBS_DIR", str(STATE_DIR / "jobs")))
 UPLOADS_DIR = Path(os.environ.get("L4D2_WEB_UPLOADS_DIR", str(STATE_DIR / "uploads")))
@@ -63,6 +66,7 @@ WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
 JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 STAGED_UPLOAD_RE = re.compile(r"^upload_[a-f0-9]{12}_[a-f0-9]{12}\.(vpk|zip)$")
+SERVER_PLUGIN_ID_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 CATALOG_FORBIDDEN_CHARS = set('/\\<>[]{}$;|`')
 MANIFEST_FORMAT = "l4d2-manager-web-manifest"
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -77,6 +81,32 @@ SYSTEM_SERVICES = [
     {"id": "room1", "label": "Room 1", "service": "l4d2"},
     {"id": "room2", "label": "Room 2", "service": "l4d2_2"},
     {"id": "web", "label": "Web Panel", "service": "l4d2-manager-web"},
+]
+SERVER_PLUGIN_DEFS = [
+    {
+        "id": "left4dhooks",
+        "label": "Left 4 DHooks Direct",
+        "filenames": ["left4dhooks.smx"],
+        "required": True,
+    },
+    {
+        "id": "kill_counter",
+        "label": "Kill Counter",
+        "filenames": ["l4d_kill.smx", "l4d2_kill_counter.smx", "l4d_kill_counter.smx", "kill_counter.smx"],
+        "required": False,
+    },
+    {
+        "id": "infected_health_gauge",
+        "label": "Infected Health Gauge",
+        "filenames": ["l4d_infected_hp.smx", "l4d2_infected_hp.smx", "infected_health_gauge.smx"],
+        "required": False,
+    },
+    {
+        "id": "advertisements",
+        "label": "Advertisements / Welcome Message",
+        "filenames": ["advertisements.smx", "simple_advertisements.smx", "sm_advertisements.smx"],
+        "required": False,
+    },
 ]
 DISK_TARGETS = [
     {"id": "root", "label": "Root", "path": Path("/")},
@@ -986,6 +1016,41 @@ def system_snapshot():
     }
 
 
+def server_plugin_file_state(filenames):
+    for filename in filenames:
+        enabled_path = SM_PLUGINS_DIR / filename
+        if enabled_path.exists():
+            return "enabled", filename, enabled_path
+        disabled_path = SM_DISABLED_DIR / filename
+        if disabled_path.exists():
+            return "disabled", filename, disabled_path
+    return "missing", filenames[0], None
+
+
+def server_plugins_snapshot():
+    plugins = []
+    for item in SERVER_PLUGIN_DEFS:
+        state, filename, path = server_plugin_file_state(item["filenames"])
+        plugins.append(
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "filenames": item["filenames"],
+                "filename": filename,
+                "state": state,
+                "size": path.stat().st_size if path and path.exists() else 0,
+                "required": item.get("required", False),
+            }
+        )
+    return {
+        "metamod": (ADDONS_DIR / "metamod").is_dir() and (ADDONS_DIR / "metamod.vdf").is_file(),
+        "sourcemod": SOURCEMOD_DIR.is_dir(),
+        "plugins_dir": str(SM_PLUGINS_DIR),
+        "disabled_dir": str(SM_DISABLED_DIR),
+        "plugins": plugins,
+    }
+
+
 def snapshot():
     campaigns = build_campaigns()
     return {
@@ -995,6 +1060,7 @@ def snapshot():
         "maps": available_maps(),
         "campaigns": campaigns,
         "addons": list_addons(),
+        "server_plugins": server_plugins_snapshot(),
         "jobs": list_jobs(),
     }
 
@@ -1874,6 +1940,94 @@ def create_install_job(kind, workshop_id):
         f"Workshop {workshop_id}",
         STEAM_WORKSHOP_URL.format(id=workshop_id),
     )
+
+
+def run_plugin_stack_job(job_id):
+    try:
+        command = ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "install-plugin-stack", "basic"]
+        result = run_job_command(job_id, command, {"L4D2_WEB_JOB_ID": job_id})
+        if result.get("cancelled"):
+            update_job(job_id, status="cancelled", stage="cancelled", message="Plugin install cancelled", finished_at=int(time.time()))
+            return
+        if not result["ok"]:
+            update_job(job_id, status="failed", stage="failed", message=result["message"][-2000:], finished_at=int(time.time()))
+            return
+        restart_result = run_cmd(
+            ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "restart-room", "all"],
+            timeout=30,
+        )
+        if not restart_result["ok"]:
+            update_job(
+                job_id,
+                status="failed",
+                stage="restart_failed",
+                progress=95,
+                message=(restart_result["stderr"] or restart_result["stdout"] or "Plugin stack installed, but restart failed")[-2000:],
+                finished_at=int(time.time()),
+            )
+            return
+        update_job(
+            job_id,
+            status="succeeded",
+            stage="finished",
+            progress=100,
+            message=(result["message"] or "Plugin stack installed")[-2000:],
+            finished_at=int(time.time()),
+        )
+    except Exception as exc:
+        update_job(job_id, status="failed", stage="failed", message=str(exc)[-2000:], finished_at=int(time.time()))
+
+
+def create_plugin_stack_job():
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": job_id,
+        "source": "server_plugins",
+        "kind": "plugins",
+        "catalog_id": "basic",
+        "title": "SourceMod conservative plugin stack",
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "current_item": "",
+        "items_done": 0,
+        "items_total": 1,
+        "message": "Queued",
+        "created_at": int(time.time()),
+        "finished_at": None,
+    }
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+        persist_job(job)
+    thread = threading.Thread(target=run_plugin_stack_job, args=(job_id,), daemon=True)
+    thread.start()
+    return {"ok": True, "message": "Plugin install queued", "job": job}
+
+
+def set_server_plugin_state(plugin_id, state):
+    if not SERVER_PLUGIN_ID_RE.match(plugin_id) or state not in {"enabled", "disabled"}:
+        return {"ok": False, "message": "Invalid server plugin request"}
+    result = run_cmd(
+        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "set-server-plugin-state", plugin_id, state],
+        timeout=20,
+    )
+    if result["ok"]:
+        return {"ok": True, "message": result["stdout"] or f"{plugin_id} {state}"}
+    return {"ok": False, "message": result["stderr"] or result["stdout"] or "Server plugin update failed"}
+
+
+def restart_server_plugin_rooms(target):
+    if target not in {"room1", "room2", "all"}:
+        return {"ok": False, "message": "Unknown restart target"}
+    result = run_cmd(
+        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "restart-room", target],
+        timeout=30,
+    )
+    if result["ok"]:
+        return {"ok": True, "message": result["stdout"] or f"Restarted {target}"}
+    return {"ok": False, "message": result["stderr"] or result["stdout"] or "Restart failed"}
 
 
 def set_addon_state(filename, state):
@@ -3253,6 +3407,22 @@ def render_page():
         </div>
         <div id="addons" class="rows"></div>
       </section>
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <div class="name">服务器插件</div>
+            <p class="section-desc">管理 MetaMod / SourceMod 与保守插件包；启用或禁用后需要重启房间。</p>
+          </div>
+          <span id="server-plugin-count" class="pill"></span>
+        </div>
+        <div class="actions">
+          <button id="install-server-plugins">安装保守插件包</button>
+          <button class="danger" data-plugin-restart="all">重启两个房间</button>
+          <button class="secondary" data-plugin-restart="room1">重启 Room 1</button>
+          <button class="secondary" data-plugin-restart="room2">重启 Room 2</button>
+        </div>
+        <div id="server-plugins" class="rows"></div>
+      </section>
     </section>
     <section class="maps card">
       <div class="section-heading">
@@ -3275,6 +3445,9 @@ def render_page():
     const mapPackagesEl = document.querySelector("#map-packages");
     const addonCountEl = document.querySelector("#addon-count");
     const addonsEl = document.querySelector("#addons");
+    const serverPluginCountEl = document.querySelector("#server-plugin-count");
+    const serverPluginsEl = document.querySelector("#server-plugins");
+    const installServerPluginsButton = document.querySelector("#install-server-plugins");
     const jobsEl = document.querySelector("#jobs");
     const jobCountEl = document.querySelector("#job-count");
     const catalogResultsEl = document.querySelector("#catalog-results");
@@ -3384,6 +3557,41 @@ def render_page():
           <div class="actions">${openLink}${install}${remove}${stateButton}</div>
         </div>`;
       }).join("");
+    }
+
+    function renderServerPlugins(serverPlugins) {
+      const info = serverPlugins || {};
+      const plugins = info.plugins || [];
+      const installed = plugins.filter(plugin => plugin.state !== "missing").length;
+      const coreOk = info.metamod && info.sourcemod;
+      serverPluginCountEl.textContent = `${installed}/${plugins.length} plugins`;
+      const core = `<div class="decision-list">
+        <div><strong>MetaMod</strong> ${info.metamod ? "installed" : "missing"}</div>
+        <div><strong>SourceMod</strong> ${info.sourcemod ? "installed" : "missing"}</div>
+      </div>`;
+      if (!plugins.length) {
+        serverPluginsEl.innerHTML = core + `<div class="empty-state">没有可管理的服务器插件。</div>`;
+        return;
+      }
+      const rows = plugins.map(plugin => {
+        const target = plugin.state === "enabled" ? "disabled" : "enabled";
+        const label = plugin.state === "enabled" ? "Disable" : "Enable";
+        const stateClass = plugin.state === "enabled" ? "ok" : (plugin.state === "missing" ? "warn" : "");
+        const action = plugin.state === "missing"
+          ? ""
+          : `<button data-server-plugin="${esc(plugin.id)}" data-server-plugin-state="${target}">${label}</button>`;
+        const size = plugin.size ? `${(plugin.size / 1024).toFixed(1)} KB` : "";
+        return `<div class="row">
+          <div>
+            <div class="package-title">${esc(plugin.label)}</div>
+            <div class="muted mono">${esc(plugin.filename || "")}</div>
+          </div>
+          <div><span class="pill ${stateClass}">${esc(plugin.state)}</span></div>
+          <div>${esc(size)}</div>
+          <div class="actions">${action}</div>
+        </div>`;
+      }).join("");
+      serverPluginsEl.innerHTML = core + rows + (coreOk ? "" : `<div class="empty-state">先安装保守插件包后再启用单个插件。</div>`);
     }
 
     function renderMapPackages(addons) {
@@ -3744,6 +3952,7 @@ def render_page():
       mapCountEl.textContent = `${data.maps.length} maps`;
       renderMapPackages(data.addons || []);
       renderAddons(data.addons || []);
+      renderServerPlugins(data.server_plugins || {});
       renderJobs(data.jobs || []);
       noticeEl.textContent = `Updated ${new Date(data.generated_at * 1000).toLocaleString()}`;
       scheduleNextRefresh(data.jobs || []);
@@ -3834,6 +4043,44 @@ def render_page():
         method: "POST",
         headers: {"Content-Type": "application/x-www-form-urlencoded"},
         body: new URLSearchParams({filename, state})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function installServerPlugins() {
+      if (!confirm("安装服务器插件栈会备份当前 MetaMod/SourceMod 并重启两个房间。继续？")) return;
+      noticeEl.textContent = "Queueing plugin install...";
+      const res = await apiFetch("/api/server-plugins/install", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({stack: "basic"})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function setServerPluginState(plugin, state) {
+      noticeEl.textContent = "Updating server plugin...";
+      const res = await apiFetch("/api/server-plugins/state", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({plugin, state})
+      });
+      const data = await res.json();
+      noticeEl.textContent = data.message;
+      await loadState();
+    }
+
+    async function restartPluginRooms(target) {
+      if (!confirm("重启房间会断开当前玩家。继续？")) return;
+      noticeEl.textContent = "Restarting room service...";
+      const res = await apiFetch("/api/server-plugins/restart", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({target})
       });
       const data = await res.json();
       noticeEl.textContent = data.message;
@@ -4129,6 +4376,23 @@ def render_page():
         removeManifestRecord(manifestRemove).finally(() => event.target.disabled = false);
       }
     });
+    installServerPluginsButton.addEventListener("click", event => {
+      event.target.disabled = true;
+      installServerPlugins().finally(() => event.target.disabled = false);
+    });
+    serverPluginsEl.addEventListener("click", event => {
+      const plugin = event.target.dataset.serverPlugin;
+      const state = event.target.dataset.serverPluginState;
+      if (!plugin || !state) return;
+      event.target.disabled = true;
+      setServerPluginState(plugin, state).finally(() => event.target.disabled = false);
+    });
+    document.addEventListener("click", event => {
+      const target = event.target.dataset.pluginRestart;
+      if (!target) return;
+      event.target.disabled = true;
+      restartPluginRooms(target).finally(() => event.target.disabled = false);
+    });
     mapPackagesEl.addEventListener("click", event => {
       const filename = event.target.dataset.addon;
       const state = event.target.dataset.addonState;
@@ -4379,6 +4643,22 @@ class Handler(BaseHTTPRequestHandler):
             filename = fields.get("filename", [""])[0]
             state = fields.get("state", [""])[0]
             result = set_addon_state(filename, state)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/server-plugins/install":
+            stack = fields.get("stack", [""])[0]
+            result = create_plugin_stack_job() if stack == "basic" else {"ok": False, "message": "Unknown plugin stack"}
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/server-plugins/state":
+            plugin_id = fields.get("plugin", [""])[0]
+            state = fields.get("state", [""])[0]
+            result = set_server_plugin_state(plugin_id, state)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/server-plugins/restart":
+            target = fields.get("target", [""])[0]
+            result = restart_server_plugin_rooms(target)
             self.send_json(200 if result["ok"] else 400, result)
             return
         if self.path == "/api/map-package/delete":

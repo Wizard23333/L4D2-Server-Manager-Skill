@@ -7,7 +7,9 @@ import struct
 import subprocess
 import sys
 import time
+import base64
 import http.client
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +25,9 @@ MAPS_DIR = Path("/opt/l4d2/left4dead2/maps")
 GAME_DIR = Path("/opt/l4d2/left4dead2")
 ADDONS_DIR = GAME_DIR / "addons"
 DISABLED_ADDONS_DIR = GAME_DIR / "addons_disabled"
+SOURCEMOD_DIR = ADDONS_DIR / "sourcemod"
+SM_PLUGINS_DIR = SOURCEMOD_DIR / "plugins"
+SM_DISABLED_DIR = SM_PLUGINS_DIR / "disabled"
 DOWNLOAD_DIR = Path("/tmp/l4d2-manager-web-downloads")
 UPLOADS_DIR = Path("/var/lib/l4d2-manager-web/uploads")
 VPK_EXTRACTOR = Path("/opt/l4d2-manager-web/vpk_extract.py")
@@ -35,6 +40,57 @@ STAGED_UPLOAD_RE = re.compile(r"^upload_[a-f0-9]{12}_[a-f0-9]{12}\.(vpk|zip)$")
 GAMEMAPS_HOSTS = {"www.gamemaps.com", "gamemaps.com"}
 ALLOWED_EXTRACT_ROOTS = {"maps", "missions", "materials", "models", "sound", "scripts"}
 INLINE_ARCHIVE = 0x7FFF
+PLUGIN_ID_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+PLUGIN_STACK = {
+    "metamod": {
+        "url": "https://mms.alliedmods.net/mmsdrop/1.12/mmsource-latest-linux",
+        "kind": "tar",
+    },
+    "sourcemod": {
+        "url": "https://sm.alliedmods.net/smdrop/1.12/sourcemod-latest-linux",
+        "kind": "tar",
+    },
+    "left4dhooks": {
+        "url": "https://github.com/SilvDev/Left4DHooks/archive/refs/heads/main.zip",
+        "candidates": ["left4dhooks.smx"],
+    },
+    "wyxls": {
+        "url": "https://github.com/wyxls/SourceModPlugins-L4D2/archive/refs/heads/master.zip",
+        "plugins": {
+            "kill_counter": ["l4d_kill.smx", "l4d2_kill_counter.smx", "l4d_kill_counter.smx", "kill_counter.smx"],
+            "infected_health_gauge": ["l4d_infected_hp.smx", "l4d2_infected_hp.smx", "infected_health_gauge.smx"],
+            "advertisements": ["advertisements.smx", "simple_advertisements.smx", "sm_advertisements.smx"],
+        },
+        "raw": {
+            "kill_counter": {
+                "url": "https://raw.githubusercontent.com/wyxls/SourceModPlugins-L4D2/master/l4d_kill/addons/sourcemod/plugins/l4d_kill.smx",
+                "api": "https://api.github.com/repos/wyxls/SourceModPlugins-L4D2/contents/l4d_kill/addons/sourcemod/plugins/l4d_kill.smx?ref=master",
+                "path": "plugins/l4d_kill.smx",
+            },
+            "infected_health_gauge": {
+                "url": "https://raw.githubusercontent.com/wyxls/SourceModPlugins-L4D2/master/l4d_infected_hp/addons/sourcemod/plugins/l4d_infected_hp.smx",
+                "api": "https://api.github.com/repos/wyxls/SourceModPlugins-L4D2/contents/l4d_infected_hp/addons/sourcemod/plugins/l4d_infected_hp.smx?ref=master",
+                "path": "plugins/l4d_infected_hp.smx",
+            },
+            "advertisements": {
+                "url": "https://raw.githubusercontent.com/wyxls/SourceModPlugins-L4D2/master/advertisements/addons/sourcemod/plugins/advertisements.smx",
+                "api": "https://api.github.com/repos/wyxls/SourceModPlugins-L4D2/contents/advertisements/addons/sourcemod/plugins/advertisements.smx?ref=master",
+                "path": "plugins/advertisements.smx",
+            },
+            "advertisements_config": {
+                "url": "https://raw.githubusercontent.com/wyxls/SourceModPlugins-L4D2/master/advertisements/addons/sourcemod/configs/advertisements.txt",
+                "api": "https://api.github.com/repos/wyxls/SourceModPlugins-L4D2/contents/advertisements/addons/sourcemod/configs/advertisements.txt?ref=master",
+                "path": "configs/advertisements.txt",
+            },
+        },
+    },
+}
+MANAGED_SERVER_PLUGINS = {
+    "left4dhooks": ["left4dhooks.smx"],
+    "kill_counter": PLUGIN_STACK["wyxls"]["plugins"]["kill_counter"],
+    "infected_health_gauge": PLUGIN_STACK["wyxls"]["plugins"]["infected_health_gauge"],
+    "advertisements": PLUGIN_STACK["wyxls"]["plugins"]["advertisements"],
+}
 
 
 def fail(message):
@@ -319,6 +375,320 @@ def extract_map_package(destination):
     emit("stage", stage="extracted", message=f"Extracted {destination.name}")
 
 
+def safe_extract_member_path(member_name):
+    relative = Path(member_name.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    parts = relative.parts
+    if not parts:
+        return None
+    if parts[0] not in {"addons", "cfg"}:
+        for index, part in enumerate(parts):
+            if part in {"addons", "cfg"}:
+                relative = Path(*parts[index:])
+                break
+        else:
+            return None
+    target = (GAME_DIR / relative).resolve()
+    try:
+        target.relative_to(GAME_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+def extract_tar_addons(archive_path):
+    with tarfile.open(archive_path) as archive:
+        for member in archive.getmembers():
+            target = safe_extract_member_path(member.name)
+            if target is None:
+                continue
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                continue
+            source = archive.extractfile(member)
+            if source is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source, open(target, "wb") as handle:
+                shutil.copyfileobj(source, handle)
+
+
+def backup_plugin_stack():
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    backup_root = ADDONS_DIR / f"server_plugins_backup_{stamp}"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    for item in ("metamod", "sourcemod", "metamod.vdf"):
+        source = ADDONS_DIR / item
+        if source.exists():
+            shutil.move(str(source), str(backup_root / item))
+    emit("message", message=f"backup created {backup_root}")
+
+
+def install_metamod_vdf():
+    ADDONS_DIR.mkdir(parents=True, exist_ok=True)
+    x64_vdf = ADDONS_DIR / "metamod_x64.vdf"
+    if x64_vdf.exists():
+        x64_vdf.unlink()
+    (ADDONS_DIR / "metamod.vdf").write_text(
+        '"Plugin"\n{\n    "file" "../left4dead2/addons/metamod/bin/server"\n}\n',
+        encoding="utf-8",
+    )
+
+
+def download_stack_archive(name):
+    info = PLUGIN_STACK[name]
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = ".tar.gz" if info.get("kind") == "tar" else ".zip"
+    target = DOWNLOAD_DIR / job_temp_name(f"{name}{suffix}")
+    emit("stage", stage="downloading", message=f"Downloading {name}")
+    download_file(info["url"], target)
+    if info.get("kind") == "tar":
+        marker = target.read_bytes()
+        if len(marker) < 256 and marker.endswith(b".tar.gz"):
+            archive_name = marker.decode("utf-8", errors="strict").strip()
+            archive_url = urllib.parse.urljoin(info["url"].rsplit("/", 1)[0] + "/", archive_name)
+            target = DOWNLOAD_DIR / job_temp_name(archive_name)
+            emit("stage", stage="downloading", message=f"Downloading {name} archive")
+            download_file(archive_url, target)
+    return target
+
+
+def download_raw_asset(url, destination):
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    result = subprocess.run(
+        [
+            "/usr/bin/curl",
+            "-fL",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "60",
+            "--retry",
+            "3",
+            "--retry-delay",
+            "2",
+            "-o",
+            str(tmp),
+            url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    if result.returncode != 0:
+        fail((result.stderr or result.stdout or f"failed to download {url}")[-2000:])
+    tmp.replace(destination)
+
+
+def download_github_content(api_url, destination):
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    request = urllib.request.Request(api_url, headers={"User-Agent": "l4d2-manager-web"})
+    with open_with_retries(request, timeout=30, label="GitHub content download") as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("encoding") != "base64" or "content" not in payload:
+        fail(f"unexpected GitHub content response for {api_url}")
+    tmp.write_bytes(base64.b64decode(payload["content"]))
+    tmp.replace(destination)
+
+
+def install_core_archives():
+    for name in ("metamod", "sourcemod"):
+        archive_path = download_stack_archive(name)
+        emit("stage", stage="extracting", message=f"Installing {name}")
+        extract_tar_addons(archive_path)
+    install_metamod_vdf()
+
+
+def install_zip_member(archive, member_name, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(member_name) as source, open(destination, "wb") as target:
+        shutil.copyfileobj(source, target)
+    chown_steam(destination)
+
+
+def install_left4dhooks():
+    archive_path = download_stack_archive("left4dhooks")
+    emit("stage", stage="extracting", message="Installing Left4DHooks")
+    installed = []
+    with zipfile.ZipFile(archive_path) as archive:
+        for name in archive.namelist():
+            normalized = name.replace("\\", "/")
+            lower = normalized.lower()
+            if "/sourcemod/" not in lower or normalized.endswith("/"):
+                continue
+            relative = normalized.split("/sourcemod/", 1)[1]
+            if not relative or relative.startswith("../"):
+                continue
+            install_zip_member(archive, name, SOURCEMOD_DIR / relative)
+            installed.append(relative)
+    if not (SM_PLUGINS_DIR / "left4dhooks.smx").exists() and not (SM_DISABLED_DIR / "left4dhooks.smx").exists():
+        fail("Left4DHooks archive did not contain left4dhooks.smx")
+    emit("message", message=f"installed Left4DHooks files: {len(installed)}")
+
+
+def find_zip_plugin(archive, candidates):
+    lowered = {candidate.lower(): candidate for candidate in candidates}
+    for name in archive.namelist():
+        base = Path(name).name.lower()
+        if base in lowered:
+            return name, lowered[base]
+    return None, ""
+
+
+def compile_source_plugin(source_path, output_path):
+    spcomp = SOURCEMOD_DIR / "scripting" / "spcomp"
+    if not spcomp.exists():
+        fail(f"cannot compile {source_path.name}: spcomp is missing")
+    result = subprocess.run(
+        [str(spcomp), str(source_path), "-o", str(output_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        fail((result.stderr or result.stdout or f"failed to compile {source_path.name}")[-2000:])
+    chown_steam(output_path)
+
+
+def install_candidate_plugin_from_zip(archive, plugin_id, candidates):
+    member, filename = find_zip_plugin(archive, candidates)
+    if member:
+        install_zip_member(archive, member, SM_PLUGINS_DIR / filename)
+        return filename
+    source_candidates = [Path(candidate).with_suffix(".sp").name for candidate in candidates]
+    source_member, source_name = find_zip_plugin(archive, source_candidates)
+    if not source_member:
+        fail(f"could not find a prebuilt or source plugin for {plugin_id}")
+    temp_dir = DOWNLOAD_DIR / job_temp_name(f"{plugin_id}_src")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    source_path = temp_dir / source_name
+    install_zip_member(archive, source_member, source_path)
+    output_name = Path(candidates[0]).name
+    compile_source_plugin(source_path, SM_PLUGINS_DIR / output_name)
+    return output_name
+
+
+def install_wyxls_plugins():
+    raw_plugins = PLUGIN_STACK["wyxls"].get("raw", {})
+    if raw_plugins:
+        installed = []
+        for plugin_id, item in raw_plugins.items():
+            destination = SOURCEMOD_DIR / item["path"]
+            emit("stage", stage="downloading", message=f"Installing {plugin_id}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and destination.stat().st_size > 0:
+                emit("message", message=f"{destination.name} already installed")
+            elif item.get("api"):
+                download_github_content(item["api"], destination)
+            else:
+                download_raw_asset(item["url"], destination)
+            chown_steam(destination)
+            if destination.suffix == ".smx":
+                installed.append(destination.name)
+        emit("message", message="installed server plugins: " + ", ".join(installed))
+        return
+
+    archive_path = download_stack_archive("wyxls")
+    installed = []
+    with zipfile.ZipFile(archive_path) as archive:
+        for plugin_id, candidates in PLUGIN_STACK["wyxls"]["plugins"].items():
+            emit("stage", stage="extracting", message=f"Installing {plugin_id}")
+            installed.append(install_candidate_plugin_from_zip(archive, plugin_id, candidates))
+        for name in archive.namelist():
+            normalized = name.replace("\\", "/")
+            lower = normalized.lower()
+            if "/sourcemod/configs/" not in lower or normalized.endswith("/"):
+                continue
+            base = Path(normalized).name.lower()
+            if any(token in base for token in ("advert", "kill", "infected", "hp")):
+                relative = normalized.split("/sourcemod/", 1)[1]
+                install_zip_member(archive, name, SOURCEMOD_DIR / relative)
+    emit("message", message="installed server plugins: " + ", ".join(installed))
+
+
+def enable_builtin_votes():
+    for filename in ("mapchooser.smx", "nominations.smx", "rockthevote.smx", "basevotes.smx"):
+        source = SM_DISABLED_DIR / filename
+        target = SM_PLUGINS_DIR / filename
+        if source.exists() and not target.exists():
+            shutil.move(str(source), str(target))
+
+
+def plugin_core_installed():
+    return (ADDONS_DIR / "metamod").is_dir() and SOURCEMOD_DIR.is_dir() and (ADDONS_DIR / "metamod.vdf").is_file()
+
+
+def left4dhooks_installed():
+    return (SM_PLUGINS_DIR / "left4dhooks.smx").exists() or (SM_DISABLED_DIR / "left4dhooks.smx").exists()
+
+
+def install_plugin_stack(stack):
+    if stack != "basic":
+        fail("usage: l4d2-webctl install-plugin-stack basic")
+    if plugin_core_installed():
+        emit("message", message="MetaMod/SourceMod already installed")
+    else:
+        backup_plugin_stack()
+        install_core_archives()
+    install_metamod_vdf()
+    if left4dhooks_installed():
+        emit("message", message="Left4DHooks already installed")
+    else:
+        install_left4dhooks()
+    install_wyxls_plugins()
+    enable_builtin_votes()
+    chown_steam(ADDONS_DIR / "metamod")
+    chown_steam(SOURCEMOD_DIR)
+    chown_steam(ADDONS_DIR / "metamod.vdf")
+    emit("message", message="server plugin stack installed")
+
+
+def managed_plugin_filename(plugin_id):
+    if plugin_id not in MANAGED_SERVER_PLUGINS:
+        fail("unknown server plugin")
+    for filename in MANAGED_SERVER_PLUGINS[plugin_id]:
+        if (SM_PLUGINS_DIR / filename).exists() or (SM_DISABLED_DIR / filename).exists():
+            return filename
+    return MANAGED_SERVER_PLUGINS[plugin_id][0]
+
+
+def set_server_plugin_state(plugin_id, state):
+    if not PLUGIN_ID_RE.match(plugin_id) or state not in {"enabled", "disabled"}:
+        fail("usage: l4d2-webctl set-server-plugin-state <plugin_id> <enabled|disabled>")
+    filename = managed_plugin_filename(plugin_id)
+    SM_PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+    SM_DISABLED_DIR.mkdir(parents=True, exist_ok=True)
+    source_dir = SM_DISABLED_DIR if state == "enabled" else SM_PLUGINS_DIR
+    target_dir = SM_PLUGINS_DIR if state == "enabled" else SM_DISABLED_DIR
+    source = source_dir / filename
+    if not source.exists():
+        fail(f"plugin is not installed in {source_dir}: {filename}")
+    target = target_dir / filename
+    if target.exists():
+        fail(f"target already exists: {target}")
+    shutil.move(str(source), str(target))
+    chown_steam(target)
+    emit("message", message=f"{plugin_id} {state}")
+
+
+def restart_room_target(target):
+    services = {"room1": ["l4d2"], "room2": ["l4d2_2"], "all": ["l4d2", "l4d2_2"]}
+    if target not in services:
+        fail("usage: l4d2-webctl restart-room <room1|room2|all>")
+    for service in services[target]:
+        subprocess.run(["/usr/bin/systemctl", "restart", service], check=True)
+    emit("message", message=f"restarted {target}")
+
+
 def install_workshop(kind, workshop_id):
     if kind not in {"map", "mod"}:
         fail("kind must be map or mod")
@@ -588,6 +958,21 @@ def import_export_zip(staged_filename):
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "install-plugin-stack":
+        if len(sys.argv) != 3:
+            fail("usage: l4d2-webctl install-plugin-stack <basic>")
+        install_plugin_stack(sys.argv[2])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "set-server-plugin-state":
+        if len(sys.argv) != 4:
+            fail("usage: l4d2-webctl set-server-plugin-state <plugin_id> <enabled|disabled>")
+        set_server_plugin_state(sys.argv[2], sys.argv[3])
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "restart-room":
+        if len(sys.argv) != 3:
+            fail("usage: l4d2-webctl restart-room <room1|room2|all>")
+        restart_room_target(sys.argv[2])
+        return
     if len(sys.argv) >= 2 and sys.argv[1] == "set-default-map":
         if len(sys.argv) != 4:
             fail("usage: l4d2-webctl set-default-map <room1|room2> <map>")
@@ -628,7 +1013,7 @@ def main():
             fail("usage: l4d2-webctl import-export-zip <staged_filename>")
         import_export_zip(sys.argv[2])
         return
-    fail("usage: l4d2-webctl <set-default-map|install-workshop|install-gamemaps-map|set-addon-state|delete-map-package|cleanup-job-temp|import-vpk|import-export-zip> ...")
+    fail("usage: l4d2-webctl <install-plugin-stack|set-server-plugin-state|restart-room|set-default-map|install-workshop|install-gamemaps-map|set-addon-state|delete-map-package|cleanup-job-temp|import-vpk|import-export-zip> ...")
 
 
 if __name__ == "__main__":
