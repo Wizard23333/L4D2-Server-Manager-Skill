@@ -4,6 +4,7 @@ import cgi
 import hashlib
 import hmac
 import html
+import mimetypes
 from http import cookies
 import json
 import os
@@ -19,6 +20,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -51,6 +53,9 @@ JOBS_DIR = Path(os.environ.get("L4D2_WEB_JOBS_DIR", str(STATE_DIR / "jobs")))
 UPLOADS_DIR = Path(os.environ.get("L4D2_WEB_UPLOADS_DIR", str(STATE_DIR / "uploads")))
 EXPORTS_DIR = Path(os.environ.get("L4D2_WEB_EXPORTS_DIR", str(STATE_DIR / "exports")))
 PACKAGES_FILE = Path(os.environ.get("L4D2_WEB_PACKAGES_FILE", str(STATE_DIR / "packages.json")))
+APP_DIR = Path(__file__).resolve().parent
+STATIC_DIR = Path(os.environ.get("L4D2_WEB_STATIC_DIR", str(APP_DIR / "static")))
+UI_MODE = os.environ.get("L4D2_WEB_UI", "react").strip().lower()
 MAX_UPLOAD_BYTES = int(os.environ.get("L4D2_WEB_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
 EXPORT_RETENTION_SECONDS = int(os.environ.get("L4D2_WEB_EXPORT_RETENTION_SECONDS", str(24 * 60 * 60)))
 EXPORT_MIN_FREE_BYTES = int(os.environ.get("L4D2_WEB_EXPORT_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
@@ -76,6 +81,11 @@ SESSIONS = {}
 JOBS_LOCK = threading.Lock()
 PROCESSES_LOCK = threading.Lock()
 SESSIONS_LOCK = threading.Lock()
+REGISTRY_LOCK = threading.Lock()
+try:
+    PARALLEL_DOWNLOADS = max(1, int(os.environ.get("L4D2_WEB_PARALLEL_DOWNLOADS", "3")))
+except (TypeError, ValueError):
+    PARALLEL_DOWNLOADS = 3
 EXCLUDED_CAMPAIGN_MAPS = {"c5m1_waterfront_sndscape"}
 SYSTEM_SERVICES = [
     {"id": "room1", "label": "Room 1", "service": "l4d2"},
@@ -114,6 +124,8 @@ DISK_TARGETS = [
     {"id": "web_state", "label": "Web State", "path": STATE_DIR},
 ]
 STEAM_DETAILS_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+STEAM_COLLECTION_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/"
+STEAM_GETDETAILS_URL = "https://api.steampowered.com/IPublishedFileService/GetDetails/v1/"
 STEAM_QUERY_URL = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
 STEAM_BROWSE_URL = "https://steamcommunity.com/workshop/browse/"
 STEAM_WORKSHOP_URL = "https://steamcommunity.com/sharedfiles/filedetails/?id={id}"
@@ -755,6 +767,9 @@ def list_addons():
                 "install_ids": package.get("install_ids", []),
                 "package_status": package.get("status", "installed"),
                 "reinstallable": bool(package.get("source") == "workshop" and package.get("id")),
+                "group_id": package.get("group_id", ""),
+                "group_title": package.get("group_title", ""),
+                "group_members": package.get("group_members", []),
             }
         )
     for filename, package in packages.items():
@@ -778,6 +793,9 @@ def list_addons():
                 "install_ids": package.get("install_ids", []),
                 "package_status": package.get("status", state),
                 "reinstallable": bool(package.get("source") == "workshop" and package.get("id")),
+                "group_id": package.get("group_id", ""),
+                "group_title": package.get("group_title", ""),
+                "group_members": package.get("group_members", []),
             }
         )
     return addons
@@ -1120,18 +1138,25 @@ def job_status(job_id):
 
 def register_job_process(job_id, process):
     with PROCESSES_LOCK:
-        JOB_PROCESSES[job_id] = process
+        JOB_PROCESSES.setdefault(job_id, set()).add(process)
 
 
 def unregister_job_process(job_id, process=None):
     with PROCESSES_LOCK:
-        if process is None or JOB_PROCESSES.get(job_id) is process:
+        if process is None:
             JOB_PROCESSES.pop(job_id, None)
+            return
+        processes = JOB_PROCESSES.get(job_id)
+        if processes is not None:
+            processes.discard(process)
+            if not processes:
+                JOB_PROCESSES.pop(job_id, None)
 
 
-def current_job_process(job_id):
+def current_job_processes(job_id):
     with PROCESSES_LOCK:
-        return JOB_PROCESSES.get(job_id)
+        processes = JOB_PROCESSES.get(job_id)
+        return list(processes) if processes else []
 
 
 def get_job(job_id):
@@ -1292,6 +1317,9 @@ def package_record_from_addon(addon, source_data=None):
         "title": addon.get("title") or addon["filename"],
         "url": source_data.get("url", ""),
         "install_ids": [str(value) for value in source_data.get("install_ids", [])],
+        "group_id": str(source_data.get("group_id", "")),
+        "group_title": source_data.get("group_title", ""),
+        "group_members": [str(value) for value in source_data.get("group_members", [])],
         "maps": addon.get("maps", []),
         "missions": sorted(addon.get("missions", {}).keys()) if isinstance(addon.get("missions"), dict) else addon.get("missions", []),
         "installed_at": int(time.time()),
@@ -1317,6 +1345,9 @@ def sync_package_registry(addons=None):
         for key in ("source", "id", "url", "install_ids", "kind"):
             if not record.get(key) and source_data.get(key):
                 record[key] = source_data[key]
+        record.setdefault("group_id", "")
+        record.setdefault("group_title", "")
+        record.setdefault("group_members", [])
         packages[addon["filename"]] = record
         changed = True
     if changed:
@@ -1324,32 +1355,36 @@ def sync_package_registry(addons=None):
     return packages
 
 
-def register_installed_package(filename, source, kind, item_id, title, url, install_ids):
+def register_installed_package(filename, source, kind, item_id, title, url, install_ids, group_id="", group_title="", group_members=None):
     if kind not in {"map", "mod"} or not ADDON_RE.match(filename):
         return
-    addons = vpk_inventory()
-    addon = next((item for item in addons if item["filename"] == filename), None)
-    if not addon:
-        return
-    packages = sync_package_registry(addons)
-    packages[filename] = package_record_from_addon(
-        addon,
-        {
-            "kind": kind,
-            "source": source,
-            "id": item_id,
-            "url": url
-            or (STEAM_WORKSHOP_URL.format(id=item_id) if source == "workshop" and item_id else "")
-            or (GAMEMAPS_DETAILS_URL.format(id=item_id) if source == "gamemaps" and item_id else ""),
-            "install_ids": install_ids or ([item_id] if item_id else []),
-        },
-    )
-    packages[filename]["title"] = title or packages[filename]["title"]
-    packages[filename]["kind"] = kind
-    write_package_registry(packages)
+    with REGISTRY_LOCK:
+        addons = vpk_inventory()
+        addon = next((item for item in addons if item["filename"] == filename), None)
+        if not addon:
+            return
+        packages = sync_package_registry(addons)
+        packages[filename] = package_record_from_addon(
+            addon,
+            {
+                "kind": kind,
+                "source": source,
+                "id": item_id,
+                "url": url
+                or (STEAM_WORKSHOP_URL.format(id=item_id) if source == "workshop" and item_id else "")
+                or (GAMEMAPS_DETAILS_URL.format(id=item_id) if source == "gamemaps" and item_id else ""),
+                "install_ids": install_ids or ([item_id] if item_id else []),
+                "group_id": group_id or "",
+                "group_title": group_title or "",
+                "group_members": group_members or [],
+            },
+        )
+        packages[filename]["title"] = title or packages[filename]["title"]
+        packages[filename]["kind"] = kind
+        write_package_registry(packages)
 
 
-def http_json(url, data=None, timeout=12):
+def http_json(url, data=None, timeout=12, attempts=4):
     body = None
     method = "GET"
     headers = {"User-Agent": "L4D2Manager/0.1"}
@@ -1358,8 +1393,180 @@ def http_json(url, data=None, timeout=12):
         method = "POST"
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    # Steam's Akamai edge node is reachable from CN over IPv4 but drops ~20% of
+    # connections intermittently. Retry transient network errors with a short
+    # backoff so a single flaky attempt does not surface as a hard failure.
+    # HTTP errors (4xx/5xx) are not retried — they are deterministic.
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            time.sleep(min(2 ** (attempt - 1), 8))
+    raise last_error
+
+
+def fetch_collection_children(collection_id):
+    try:
+        payload = http_json(
+            STEAM_COLLECTION_URL,
+            {"collectioncount": "1", "publishedfileids[0]": collection_id},
+        )
+        details = payload.get("response", {}).get("collectiondetails", [{}])[0]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError):
+        return []
+    if str(details.get("result")) != "1":
+        return []
+    children = details.get("children") or []
+    ordered = sorted(children, key=lambda child: int(child.get("sortorder") or 0))
+    ids = []
+    for child in ordered:
+        child_id = str(child.get("publishedfileid") or "")
+        if WORKSHOP_ID_RE.match(child_id):
+            ids.append(child_id)
+    return ids
+
+
+def fetch_required_children(workshop_id):
+    """Resolve multi-part workshop maps (e.g. ContraZ part1/part2).
+
+    A single installable workshop item can declare sibling parts through the
+    ``children`` field exposed by IPublishedFileService/GetDetails (this needs a
+    Steam Web API key; the anonymous GetPublishedFileDetails endpoint does not
+    return it). Returns the full ordered list of part ids including the queried
+    item itself, or [] when there are no extra parts / no key available.
+    """
+    if not STEAM_WEB_API_KEY:
+        return []
+    if not WORKSHOP_ID_RE.match(str(workshop_id)):
+        return []
+    params = {
+        "key": STEAM_WEB_API_KEY,
+        "publishedfileids[0]": str(workshop_id),
+        "includechildren": "true",
+        "return_children": "true",
+    }
+    url = STEAM_GETDETAILS_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        payload = http_json(url)
+        details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError):
+        return []
+    children = details.get("children") or []
+    if not children:
+        return []
+    ordered = sorted(children, key=lambda child: int(child.get("sortorder") or 0))
+    ids = [str(workshop_id)]
+    for child in ordered:
+        child_id = str(child.get("publishedfileid") or "")
+        if WORKSHOP_ID_RE.match(child_id) and child_id not in ids:
+            ids.append(child_id)
+    return ids if len(ids) > 1 else []
+
+
+PART_SUFFIX_RE = re.compile(r"[\s_\-]*[\(（]?\s*part\s*\d+\s*[\)）]?\s*$", re.I)
+
+
+def strip_part_suffix(title):
+    """Remove a trailing part marker (e.g. ``(part1)`` / ``- part 2``) to get the base map name."""
+    if not title:
+        return title
+    stripped = PART_SUFFIX_RE.sub("", title).strip()
+    return stripped or title
+
+
+def fetch_workshop_meta(workshop_id):
+    """Return ``{"title": str, "children": [ids]}`` for a workshop item.
+
+    Prefers the authenticated GetDetails endpoint (exposes sibling parts via
+    ``children``); falls back to the anonymous GetPublishedFileDetails for the
+    title only. Always returns a dict (empty fields on failure)."""
+    meta = {"title": "", "children": []}
+    if not WORKSHOP_ID_RE.match(str(workshop_id)):
+        return meta
+    if STEAM_WEB_API_KEY:
+        params = {
+            "key": STEAM_WEB_API_KEY,
+            "publishedfileids[0]": str(workshop_id),
+            "includechildren": "true",
+            "return_children": "true",
+        }
+        url = STEAM_GETDETAILS_URL + "?" + urllib.parse.urlencode(params)
+        try:
+            payload = http_json(url)
+            details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+            meta["title"] = details.get("title") or ""
+            children = details.get("children") or []
+            ordered = sorted(children, key=lambda child: int(child.get("sortorder") or 0))
+            child_ids = []
+            for child in ordered:
+                child_id = str(child.get("publishedfileid") or "")
+                if WORKSHOP_ID_RE.match(child_id) and child_id not in child_ids:
+                    child_ids.append(child_id)
+            meta["children"] = child_ids
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError):
+            pass
+    if not meta["title"]:
+        try:
+            payload = http_json(STEAM_DETAILS_URL, {"itemcount": "1", "publishedfileids[0]": str(workshop_id)})
+            details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+            meta["title"] = details.get("title") or ""
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError):
+            pass
+    return meta
+
+
+def backfill_package_groups():
+    """Re-derive group relationships for already-installed workshop map packages.
+
+    For every map package that has a workshop id but no group_id yet, query the
+    Steam children relationship; when a multi-part group is found, write the
+    shared group_id / group_title / group_members onto all member records that
+    are present in the registry. Returns the number of groups backfilled."""
+    packages = read_package_registry()
+    by_id = {}
+    for filename, record in packages.items():
+        rec_id = str(record.get("id") or "")
+        if record.get("kind") == "map" and record.get("source") == "workshop" and WORKSHOP_ID_RE.match(rec_id):
+            by_id.setdefault(rec_id, filename)
+    processed = set()
+    grouped = 0
+    changed = False
+    for rec_id, filename in list(by_id.items()):
+        if rec_id in processed:
+            continue
+        if packages.get(filename, {}).get("group_id"):
+            processed.add(rec_id)
+            continue
+        meta = fetch_workshop_meta(rec_id)
+        time.sleep(0.3)
+        members = [rec_id] + [cid for cid in meta.get("children", []) if cid != rec_id]
+        if len(members) <= 1:
+            processed.add(rec_id)
+            continue
+        group_id = min(members, key=int)
+        title = meta.get("title") or packages.get(filename, {}).get("title") or ""
+        group_title = strip_part_suffix(title) if title else ""
+        for member_id in members:
+            processed.add(member_id)
+            member_file = by_id.get(member_id)
+            if not member_file or member_file not in packages:
+                continue
+            record = packages[member_file]
+            record["group_id"] = group_id
+            record["group_title"] = group_title
+            record["group_members"] = list(members)
+            changed = True
+        grouped += 1
+    if changed:
+        write_package_registry(packages)
+    return grouped
 
 
 def format_bytes(value):
@@ -1472,6 +1679,21 @@ def workshop_detail_result(workshop_id, kind):
         )
     title = details.get("title") or f"Workshop {workshop_id}"
     installable = str(details.get("result")) == "1" and bool(details.get("file_url"))
+    if not installable:
+        children = fetch_collection_children(workshop_id)
+        if children:
+            return catalog_item(
+                "workshop",
+                workshop_id,
+                title,
+                kind,
+                STEAM_WORKSHOP_URL.format(id=workshop_id),
+                f"{len(children)} packages",
+                f"Workshop collection: installs {len(children)} child items.",
+                True,
+                "",
+                children,
+            )
     reason = "" if installable else f"Steam API returned result {details.get('result', 'unknown')} without file_url"
     return catalog_item(
         "workshop",
@@ -1484,6 +1706,122 @@ def workshop_detail_result(workshop_id, kind):
         installable,
         reason,
     )
+
+
+def proxy_suggested_filename(kind, workshop_id, title):
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (title or "").strip()).strip("._-")
+    safe = (safe or "workshop_item")[:80]
+    prefix = "map" if kind == "map" else "mod"
+    return f"{prefix}_{workshop_id}_{safe}.vpk"
+
+
+def resolve_single_workshop_download(workshop_id, kind):
+    """Resolve one workshop item to a direct CDN url + suggested filename.
+
+    Returns ``{"ok": True, ...}`` on success or ``{"ok": False, "message"}``.
+    """
+    try:
+        payload = http_json(STEAM_DETAILS_URL, {"itemcount": "1", "publishedfileids[0]": workshop_id})
+        details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError) as exc:
+        return {"ok": False, "workshop_id": workshop_id, "message": f"Steam lookup failed: {exc}"}
+    title = details.get("title") or f"Workshop {workshop_id}"
+    file_url = details.get("file_url")
+    if str(details.get("result")) != "1" or not file_url or not file_url.startswith(("http://", "https://")):
+        return {
+            "ok": False,
+            "workshop_id": workshop_id,
+            "title": title,
+            "message": "Steam API did not return a downloadable file_url (may be a collection or restricted item)",
+        }
+    try:
+        file_size = int(details.get("file_size") or 0)
+    except (TypeError, ValueError):
+        file_size = 0
+    return {
+        "ok": True,
+        "workshop_id": workshop_id,
+        "kind": kind,
+        "title": title,
+        "file_url": file_url,
+        "file_size": file_size,
+        "suggested_filename": proxy_suggested_filename(kind, workshop_id, title),
+    }
+
+
+def resolve_workshop_download(workshop_id, kind):
+    """Resolve a workshop id (single item or collection) to direct download(s)
+    for browser-side ("proxy") downloading. Returns either a single resolved
+    item or, for collections, a list of resolved children under ``items``.
+    """
+    kind = "mod" if kind == "mod" else "map"
+    if not WORKSHOP_ID_RE.match(str(workshop_id)):
+        return {"ok": False, "message": "Invalid workshop id"}
+    single = resolve_single_workshop_download(workshop_id, kind)
+    if single.get("ok"):
+        return single
+    children = fetch_collection_children(workshop_id)
+    if children:
+        items = []
+        for child_id in children:
+            items.append(resolve_single_workshop_download(child_id, kind))
+        return {
+            "ok": True,
+            "workshop_id": workshop_id,
+            "kind": kind,
+            "collection": True,
+            "items": items,
+        }
+    return single
+
+
+def workshop_expected_parts(workshop_id, kind):
+    """Resolve the full set of downloadable parts that belong to a workshop id.
+
+    Expands collections and multi-part maps the same way the install pipeline
+    does (collection children, then sibling parts via GetDetails), then resolves
+    each part's direct url + ``file_size`` + suggested filename. Returns
+    ``{"ok": True, "workshop_id", "kind", "collection", "title", "parts": [...]}``
+    where each part mirrors :func:`resolve_single_workshop_download`.
+    """
+    kind = "mod" if kind == "mod" else "map"
+    workshop_id = str(workshop_id)
+    if not WORKSHOP_ID_RE.match(workshop_id):
+        return {"ok": False, "message": "Invalid workshop id"}
+    ids = fetch_collection_children(workshop_id)
+    collection = bool(ids)
+    title = ""
+    if not ids:
+        # A single fetch_workshop_meta call returns both the title and any
+        # sibling parts (children); reuse it instead of issuing a second,
+        # identical GetDetails request via fetch_required_children. Each extra
+        # serial round-trip to Steam is a separate chance to stall on this host.
+        meta = fetch_workshop_meta(workshop_id)
+        title = meta.get("title", "")
+        children = meta.get("children") or []
+        if children:
+            ids = [workshop_id] + [cid for cid in children if cid != workshop_id]
+    if not ids:
+        ids = [workshop_id]
+    parts = [resolve_single_workshop_download(cid, kind) for cid in ids]
+    if not title:
+        title = fetch_workshop_meta(workshop_id).get("title", "")
+    if not title:
+        for part in parts:
+            if part.get("title"):
+                title = part["title"]
+                break
+    if not any(part.get("ok") for part in parts):
+        message = next((part.get("message") for part in parts if part.get("message")), "No downloadable items found for this id")
+        return {"ok": False, "workshop_id": workshop_id, "kind": kind, "message": message}
+    return {
+        "ok": True,
+        "workshop_id": workshop_id,
+        "kind": kind,
+        "collection": collection,
+        "title": title,
+        "parts": parts,
+    }
 
 
 def workshop_search_results(query, kind):
@@ -1641,21 +1979,9 @@ def install_command(source, kind, item_id):
     return None
 
 
-def run_install_command(job_id, command, index, total_items, item_id):
+def run_install_item(job_id, command, item_id, on_progress=None):
     if job_status(job_id) == "cancelled":
         return {"ok": False, "cancelled": True, "message": "Install cancelled"}
-    update_job(
-        job_id,
-        status="running",
-        stage="starting",
-        current_item=item_id,
-        items_done=index - 1,
-        items_total=total_items,
-        progress=int(((index - 1) / total_items) * 100),
-        downloaded_bytes=0,
-        total_bytes=0,
-        message=f"Installing item {index}/{total_items}: {item_id}",
-    )
     lines = []
     try:
         env = os.environ.copy()
@@ -1673,6 +1999,8 @@ def run_install_command(job_id, command, index, total_items, item_id):
     except Exception as exc:
         return {"ok": False, "message": str(exc)}
 
+    code = None
+    stderr = ""
     try:
         assert process.stdout is not None
         for line in process.stdout:
@@ -1686,30 +2014,27 @@ def run_install_command(job_id, command, index, total_items, item_id):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                update_job(job_id, message=line[-2000:])
+                if on_progress:
+                    on_progress(item_id, message=line[-2000:])
                 continue
-            if event.get("event") == "progress":
+            kind_event = event.get("event")
+            if kind_event == "progress":
                 downloaded = int(event.get("downloaded") or 0)
                 total = int(event.get("total") or 0)
-                item_fraction = downloaded / total if total > 0 else 0
-                update_job(
-                    job_id,
-                    stage=event.get("stage") or "downloading",
-                    downloaded_bytes=downloaded,
-                    total_bytes=total,
-                    progress=min(99, int(((index - 1 + item_fraction) / total_items) * 100)),
-                    message=event.get("message") or f"Downloading item {index}/{total_items}",
-                )
-            elif event.get("event") == "stage":
-                progress = int(((index - 1) / total_items) * 100)
-                update_job(
-                    job_id,
-                    stage=event.get("stage") or "",
-                    progress=progress,
-                    message=event.get("message") or "",
-                )
-            elif event.get("event") == "message":
-                update_job(job_id, message=event.get("message") or "")
+                if on_progress:
+                    on_progress(
+                        item_id,
+                        downloaded=downloaded,
+                        total=total,
+                        stage=event.get("stage") or "downloading",
+                        message=event.get("message") or "",
+                    )
+            elif kind_event == "stage":
+                if on_progress:
+                    on_progress(item_id, stage=event.get("stage") or "", message=event.get("message") or "")
+            elif kind_event == "message":
+                if on_progress:
+                    on_progress(item_id, message=event.get("message") or "")
         try:
             stderr = process.stderr.read() if process.stderr else ""
             code = process.wait(timeout=1800)
@@ -1786,89 +2111,221 @@ def cancel_job(job_id):
             }
         )
         persist_job(job)
-    process = current_job_process(job_id)
-    if process and process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+    for process in current_job_processes(job_id):
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
     cleanup_job_temp(job_id)
     return {"ok": True, "message": "Install job cancelled"}
 
 
+def delete_job(job_id):
+    if not JOB_ID_RE.match(job_id):
+        return {"ok": False, "message": "Invalid job id"}
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return {"ok": False, "message": "Job not found"}
+        if job.get("status") in {"queued", "running"}:
+            return {"ok": False, "message": "Cancel the job before deleting it"}
+        JOBS.pop(job_id, None)
+    try:
+        job_path(job_id).unlink()
+    except OSError:
+        pass
+    return {"ok": True, "message": "Job record deleted"}
+
+
+def rerun_job(job_id):
+    if not JOB_ID_RE.match(job_id):
+        return {"ok": False, "message": "Invalid job id"}
+    load_persisted_jobs()
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        job = dict(job) if job else None
+    if not job:
+        return {"ok": False, "message": "Job not found"}
+    if job.get("status") in {"queued", "running"}:
+        return {"ok": False, "message": "Job is still active"}
+    source = job.get("source", "")
+    kind = job.get("kind", "")
+    item_id = job.get("catalog_id") or job.get("workshop_id") or ""
+    if source not in {"workshop", "gamemaps"} or not item_id:
+        return {"ok": False, "message": "This job type cannot be re-run"}
+    install_ids = [str(value) for value in (job.get("install_ids") or []) if value]
+    return create_catalog_install_job(
+        source,
+        kind,
+        item_id,
+        job.get("title", ""),
+        job.get("url", ""),
+        install_ids,
+    )
+
+
 def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="", catalog_id=""):
     try:
+        item_ids = [str(x) for x in item_ids]
         total_items = len(item_ids)
         if total_items < 1:
             update_job(job_id, status="failed", message="No install items", finished_at=int(time.time()))
             return
-        messages = []
-        for index, current_id in enumerate(item_ids, 1):
-            if job_status(job_id) == "cancelled":
-                cleanup_job_temp(job_id)
-                return
-            command = install_command(source, kind, current_id)
-            if not command:
-                update_job(job_id, status="failed", message="Unsupported install source or kind", finished_at=int(time.time()))
-                return
-            result = run_install_command(job_id, command, index, total_items, current_id)
-            messages.append(result["message"])
-            if result.get("cancelled") or job_status(job_id) == "cancelled":
-                cleanup_job_temp(job_id)
-                update_job(
-                    job_id,
-                    status="cancelled",
-                    stage="cancelled",
-                    message="Install cancelled. Already installed earlier package parts were kept.",
-                    finished_at=int(time.time()),
-                )
-                return
-            if not result["ok"]:
-                update_job(
-                    job_id,
-                    status="failed",
-                    stage="failed",
-                    message=result["message"][-2000:],
-                    finished_at=int(time.time()),
-                )
-                return
-            if result.get("filename"):
-                item_url = (
-                    STEAM_WORKSHOP_URL.format(id=current_id)
-                    if source == "workshop"
-                    else GAMEMAPS_DETAILS_URL.format(id=current_id)
-                )
-                item_title = title or result["filename"]
-                if title and total_items > 1:
-                    item_title = f"{title} ({index}/{total_items})"
-                register_installed_package(
-                    result["filename"],
-                    source,
-                    kind,
-                    current_id,
-                    item_title,
-                    url if current_id == catalog_id else item_url,
-                    [current_id],
-                )
-                addon = next((item for item in vpk_inventory() if item["filename"] == result["filename"]), None)
-                if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
-                    messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
+        group_id = ""
+        group_title = ""
+        group_members = []
+        if source == "workshop" and kind == "map" and total_items > 1 and all(WORKSHOP_ID_RE.match(x) for x in item_ids):
+            group_members = list(item_ids)
+            group_id = min(group_members, key=int)
+            group_title = strip_part_suffix(title) if title else ""
+
+        update_job(
+            job_id,
+            status="running",
+            stage="downloading",
+            items_done=0,
+            items_total=total_items,
+            progress=0,
+            downloaded_bytes=0,
+            total_bytes=0,
+            current_item=item_ids[0] if total_items == 1 else "",
+            message=f"Downloading {total_items} item(s) in parallel" if total_items > 1 else f"Installing item: {item_ids[0]}",
+        )
+
+        # Per-item byte counters shared across worker threads; protected by a lock.
+        progress_lock = threading.Lock()
+        per_item_downloaded = {item_id: 0 for item_id in item_ids}
+        per_item_total = {item_id: 0 for item_id in item_ids}
+        done_counter = {"value": 0}
+
+        def publish_progress():
+            with progress_lock:
+                agg_downloaded = sum(per_item_downloaded.values())
+                agg_total = sum(per_item_total.values())
+                done = done_counter["value"]
+            fraction = (agg_downloaded / agg_total) if agg_total > 0 else 0
             update_job(
                 job_id,
-                items_done=index,
-                progress=int((index / total_items) * 100),
-                downloaded_bytes=0,
-                total_bytes=0,
-                message=f"Installed item {index}/{total_items}: {current_id}",
+                stage="downloading",
+                downloaded_bytes=agg_downloaded,
+                total_bytes=agg_total,
+                items_done=done,
+                items_total=total_items,
+                progress=min(99, int(fraction * 100)),
             )
+
+        def on_progress(item_id, downloaded=None, total=None, stage=None, message=None):
+            changed = False
+            with progress_lock:
+                if downloaded is not None:
+                    per_item_downloaded[item_id] = downloaded
+                    changed = True
+                if total is not None and total > 0:
+                    per_item_total[item_id] = total
+                    changed = True
+            if changed:
+                publish_progress()
+
+        def install_one(index, current_id):
+            command = install_command(source, kind, current_id)
+            if not command:
+                return {"ok": False, "message": "Unsupported install source or kind", "id": current_id, "index": index}
+            result = run_install_item(job_id, command, current_id, on_progress=on_progress)
+            with progress_lock:
+                if result.get("ok") and per_item_total.get(current_id):
+                    per_item_downloaded[current_id] = per_item_total[current_id]
+                done_counter["value"] += 1
+            result["id"] = current_id
+            result["index"] = index
+            publish_progress()
+            return result
+
+        messages = []
+        results = []
+        failure = None
+        cancelled = False
+        with ThreadPoolExecutor(max_workers=min(PARALLEL_DOWNLOADS, total_items)) as executor:
+            futures = {
+                executor.submit(install_one, index, current_id): current_id
+                for index, current_id in enumerate(item_ids, 1)
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failure = {"ok": False, "message": str(exc)}
+                    continue
+                results.append(result)
+                if result.get("cancelled"):
+                    cancelled = True
+                elif not result.get("ok") and failure is None:
+                    failure = result
+
+        if cancelled or job_status(job_id) == "cancelled":
+            cleanup_job_temp(job_id)
+            update_job(
+                job_id,
+                status="cancelled",
+                stage="cancelled",
+                message="Install cancelled. Already installed earlier package parts were kept.",
+                finished_at=int(time.time()),
+            )
+            return
+
+        if failure is not None:
+            update_job(
+                job_id,
+                status="failed",
+                stage="failed",
+                message=str(failure.get("message", "Install failed"))[-2000:],
+                finished_at=int(time.time()),
+            )
+            return
+
+        # Register installed packages serially in original order for stable grouping.
+        for result in sorted(results, key=lambda item: item.get("index", 0)):
+            current_id = result.get("id", "")
+            index = result.get("index", 0)
+            if result.get("message"):
+                messages.append(result["message"])
+            if not result.get("filename"):
+                continue
+            item_url = (
+                STEAM_WORKSHOP_URL.format(id=current_id)
+                if source == "workshop"
+                else GAMEMAPS_DETAILS_URL.format(id=current_id)
+            )
+            item_title = title or result["filename"]
+            if title and total_items > 1:
+                item_title = f"{title} ({index}/{total_items})"
+            register_installed_package(
+                result["filename"],
+                source,
+                kind,
+                current_id,
+                item_title,
+                url if current_id == catalog_id else item_url,
+                [current_id],
+                group_id,
+                group_title,
+                group_members,
+            )
+            addon = next((item for item in vpk_inventory() if item["filename"] == result["filename"]), None)
+            if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
+                messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
+
         update_job(
             job_id,
             status="succeeded",
             stage="finished",
             progress=100,
+            items_done=total_items,
+            items_total=total_items,
             current_item="",
-            message=("\n".join(messages) or "Install finished")[-2000:],
+            message=("\n".join(part for part in messages if part) or "Install finished")[-2000:],
             finished_at=int(time.time()),
         )
     finally:
@@ -1891,7 +2348,13 @@ def create_catalog_install_job(source, kind, item_id, title="", url="", install_
         return {"ok": False, "message": "GameMaps installs are map-only"}
     if not WORKSHOP_ID_RE.match(item_id):
         return {"ok": False, "message": "Catalog id must be numeric"}
-    item_ids = install_ids or known_install_ids(source, kind, item_id) or [item_id]
+    item_ids = install_ids or known_install_ids(source, kind, item_id)
+    if not item_ids and source == "workshop":
+        item_ids = fetch_collection_children(item_id)
+    if not item_ids and source == "workshop":
+        item_ids = fetch_required_children(item_id)
+    if not item_ids:
+        item_ids = [item_id]
     if source != "workshop" and len(item_ids) > 1:
         return {"ok": False, "message": "Bundle installs are workshop-only"}
     if any(not WORKSHOP_ID_RE.match(value) for value in item_ids):
@@ -1933,12 +2396,29 @@ def create_catalog_install_job(source, kind, item_id, title="", url="", install_
 def create_install_job(kind, workshop_id):
     if not WORKSHOP_ID_RE.match(workshop_id):
         return {"ok": False, "message": "Workshop ID must be numeric"}
+    # A single GetDetails call already returns both the title and the sibling
+    # parts (children). Reuse those children directly as install ids so we
+    # never depend on a second, possibly-failing GetDetails request inside
+    # create_catalog_install_job (which on a flaky network would silently fall
+    # back to installing only the single queried item).
+    meta = fetch_workshop_meta(workshop_id)
+    title = meta.get("title") or f"Workshop {workshop_id}"
+    install_ids = None
+    # A workshop item may declare parts either as a collection or via children.
+    children = fetch_collection_children(workshop_id)
+    if not children:
+        meta_children = meta.get("children") or []
+        if meta_children:
+            children = [workshop_id] + [cid for cid in meta_children if cid != workshop_id]
+    if children:
+        install_ids = children
     return create_catalog_install_job(
         "workshop",
         kind,
         workshop_id,
-        f"Workshop {workshop_id}",
+        title,
         STEAM_WORKSHOP_URL.format(id=workshop_id),
+        install_ids,
     )
 
 
@@ -2817,14 +3297,18 @@ def run_transfer_job(job_id):
             update_job(job_id, status="failed", stage="failed", message=result["message"][-2000:], finished_at=int(time.time()))
             return
         if job.get("upload_type") == "vpk":
+            meta = job.get("metadata") or {}
             register_installed_package(
                 job.get("final_filename", ""),
-                "upload",
-                job.get("kind", "map"),
-                "",
-                Path(job.get("final_filename", "")).stem,
-                "",
-                [],
+                meta.get("source") or "upload",
+                meta.get("kind") or job.get("kind", "map"),
+                meta.get("item_id") or "",
+                meta.get("title") or Path(job.get("final_filename", "")).stem,
+                meta.get("url") or "",
+                meta.get("install_ids") or [],
+                meta.get("group_id") or "",
+                meta.get("group_title") or "",
+                meta.get("group_members") or [],
             )
         else:
             merge_imported_packages_from_zip(staged_path)
@@ -2876,6 +3360,103 @@ def create_upload_job(kind, field):
             staged_path.unlink(missing_ok=True)
             return validation
     return create_transfer_job(kind, upload_type, staged_filename, final_filename)
+
+
+def create_workshop_upload_job(kind, workshop_id, field, expected_id=""):
+    """Stage an uploaded VPK, verify it belongs to ``workshop_id`` by an exact
+    byte-size match against that id's resolved parts, then install it under
+    that id with authoritative filename + grouping.
+
+    ``expected_id`` (optional) lets the client pin the upload to a specific
+    sub-part; the server still re-resolves and re-verifies independently.
+    """
+    kind = "mod" if kind == "mod" else "map"
+    workshop_id = str(workshop_id or "").strip()
+    if not WORKSHOP_ID_RE.match(workshop_id):
+        return {"ok": False, "message": "Workshop ID must be numeric"}
+    original = Path(field.filename or "").name
+    if Path(original).suffix.lower() != ".vpk":
+        return {"ok": False, "message": "Upload must be a .vpk file"}
+    resolved = workshop_expected_parts(workshop_id, kind)
+    if not resolved.get("ok"):
+        return {"ok": False, "message": resolved.get("message") or "Could not resolve this Workshop ID"}
+    parts = [part for part in resolved.get("parts", []) if part.get("ok")]
+    if not parts:
+        return {"ok": False, "message": "This Workshop ID has no downloadable parts to match against"}
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    staged_filename = f"upload_{uuid.uuid4().hex[:12]}_{uuid.uuid4().hex[:12]}.vpk"
+    staged_path = UPLOADS_DIR / staged_filename
+    size = 0
+    try:
+        with open(staged_path, "wb") as handle:
+            while True:
+                chunk = field.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    handle.close()
+                    staged_path.unlink(missing_ok=True)
+                    return {"ok": False, "message": "Upload is too large"}
+                handle.write(chunk)
+    except OSError as exc:
+        staged_path.unlink(missing_ok=True)
+        return {"ok": False, "message": str(exc)}
+    if not assert_vpk_signature(staged_path):
+        staged_path.unlink(missing_ok=True)
+        return {"ok": False, "message": "Uploaded file is not a VPK"}
+
+    # Match by exact byte size: the VPK does not embed its workshop id and the
+    # free Steam API exposes no per-file hash, so an exact size match against a
+    # part's authoritative file_size is the reliable ownership signal (same
+    # check the server-side downloader enforces).
+    size_matches = [part for part in parts if int(part.get("file_size") or 0) == size]
+    if expected_id:
+        pinned = [part for part in size_matches if str(part.get("workshop_id")) == str(expected_id)]
+        if pinned:
+            size_matches = pinned
+    if not size_matches:
+        staged_path.unlink(missing_ok=True)
+        expected_sizes = ", ".join(f"{p.get('workshop_id')}={p.get('file_size')}B" for p in parts)
+        return {
+            "ok": False,
+            "message": (
+                f"Uploaded file ({size} B) does not match any part of Workshop {workshop_id}. "
+                f"Expected sizes: {expected_sizes}. Make sure you selected the correct .vpk."
+            ),
+        }
+    matched = size_matches[0]
+    matched_id = str(matched.get("workshop_id"))
+    final_filename = safe_upload_final_name(matched.get("suggested_filename") or original, ".vpk")
+    if addon_file_path(final_filename):
+        staged_path.unlink(missing_ok=True)
+        return {"ok": False, "message": f"Target already exists: {final_filename}"}
+
+    total_items = len(parts)
+    group_id = ""
+    group_title = ""
+    group_members = []
+    if kind == "map" and total_items > 1:
+        group_members = [str(part.get("workshop_id")) for part in parts]
+        group_id = min(group_members, key=int)
+        group_title = strip_part_suffix(resolved.get("title") or "")
+    item_title = matched.get("title") or resolved.get("title") or final_filename
+    if total_items > 1:
+        order = group_members.index(matched_id) + 1 if matched_id in group_members else 1
+        item_title = f"{resolved.get('title') or item_title} ({order}/{total_items})"
+
+    metadata = {
+        "source": "workshop",
+        "kind": kind,
+        "item_id": matched_id,
+        "title": item_title,
+        "url": STEAM_WORKSHOP_URL.format(id=matched_id),
+        "install_ids": [matched_id],
+        "group_id": group_id,
+        "group_title": group_title,
+        "group_members": group_members,
+    }
+    return create_transfer_job(kind, "vpk", staged_filename, final_filename, metadata)
 
 
 def validate_export_zip(path):
@@ -2934,6 +3515,40 @@ def handle_upload_request(handler):
         return
     kind = form.getfirst("kind", "map")
     result = create_upload_job(kind, file_field)
+    handler.send_json(200 if result["ok"] else 400, result)
+
+
+def handle_workshop_upload_request(handler):
+    content_length = int(handler.headers.get("Content-Length", "0") or 0)
+    if content_length <= 0:
+        handler.send_json(400, {"ok": False, "message": "Upload body is empty"})
+        return
+    if content_length > MAX_UPLOAD_BYTES + 1024 * 1024:
+        handler.send_json(400, {"ok": False, "message": "Upload is too large"})
+        return
+    content_type = handler.headers.get("Content-Type", "")
+    if "multipart/form-data" not in content_type:
+        handler.send_json(400, {"ok": False, "message": "Upload must use multipart/form-data"})
+        return
+    form = cgi.FieldStorage(
+        fp=handler.rfile,
+        headers=handler.headers,
+        environ={
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": content_type,
+            "CONTENT_LENGTH": str(content_length),
+        },
+    )
+    file_field = form["file"] if "file" in form else None
+    if isinstance(file_field, list):
+        file_field = file_field[0] if file_field else None
+    if file_field is None or not getattr(file_field, "filename", ""):
+        handler.send_json(400, {"ok": False, "message": "Missing upload file"})
+        return
+    kind = form.getfirst("kind", "map")
+    workshop_id = form.getfirst("workshop_id", "")
+    expected_id = form.getfirst("expected_id", "")
+    result = create_workshop_upload_job(kind, workshop_id, file_field, expected_id)
     handler.send_json(200 if result["ok"] else 400, result)
 
 
@@ -4455,6 +5070,40 @@ def render_page():
 </html>"""
 
 
+def react_index_path():
+    return STATIC_DIR / "index.html"
+
+
+def render_selected_page():
+    if UI_MODE == "legacy":
+        return render_page()
+    index = react_index_path()
+    if index.is_file():
+        try:
+            return index.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"React UI index is unreadable, falling back to legacy UI: {exc}")
+            return render_page()
+    print(f"React UI requested but {index} is missing; falling back to legacy UI")
+    return render_page()
+
+
+def static_file_for_path(request_path):
+    if request_path.startswith("/assets/"):
+        relative = request_path[len("/"):]
+    elif request_path.startswith("/static/"):
+        relative = request_path[len("/static/"):]
+    else:
+        return None
+    candidate = (STATIC_DIR / relative).resolve()
+    static_root = STATIC_DIR.resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        return None
+    return candidate
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "L4D2Manager/0.1"
 
@@ -4514,6 +5163,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_static_file(self, path):
+        if not path or not path.is_file():
+            return False
+        mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            self.send_error(500, f"Cannot read static asset: {exc}")
+            return True
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+        return True
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/login":
@@ -4532,12 +5197,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.require_auth()
             return
         if parsed.path == "/" or parsed.path == "/index.html":
-            payload = render_page().encode("utf-8")
+            payload = render_selected_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            return
+        static_path = static_file_for_path(parsed.path)
+        if static_path:
+            if self.send_static_file(static_path):
+                return
+            self.send_error(404)
             return
         if parsed.path == "/api/state":
             self.send_json(200, snapshot())
@@ -4548,6 +5219,20 @@ class Handler(BaseHTTPRequestHandler):
             kind = fields.get("kind", ["map"])[0]
             result = search_catalog(query, kind)
             self.send_json(200 if result["ok"] else 400, result)
+            return
+        if parsed.path == "/api/workshop/resolve":
+            fields = parse_qs(parsed.query)
+            workshop_id = fields.get("workshop_id", [""])[0]
+            kind = fields.get("kind", ["map"])[0]
+            result = resolve_workshop_download(workshop_id, kind)
+            self.send_json(200 if result.get("ok") else 400, result)
+            return
+        if parsed.path == "/api/workshop/parts":
+            fields = parse_qs(parsed.query)
+            workshop_id = fields.get("workshop_id", [""])[0]
+            kind = fields.get("kind", ["map"])[0]
+            result = workshop_expected_parts(workshop_id, kind)
+            self.send_json(200 if result.get("ok") else 400, result)
             return
         if parsed.path == "/api/map-package/export":
             fields = parse_qs(parsed.query)
@@ -4600,6 +5285,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/upload":
             handle_upload_request(self)
             return
+        if self.path == "/api/upload/workshop":
+            handle_workshop_upload_request(self)
+            return
         if self.path == "/api/manifest/import":
             handle_manifest_import_request(self)
             return
@@ -4638,6 +5326,20 @@ class Handler(BaseHTTPRequestHandler):
             job_id = fields.get("job_id", [""])[0]
             result = cancel_job(job_id)
             self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/job/delete":
+            job_id = fields.get("job_id", [""])[0]
+            result = delete_job(job_id)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/job/rerun":
+            job_id = fields.get("job_id", [""])[0]
+            result = rerun_job(job_id)
+            self.send_json(200 if result["ok"] else 400, result)
+            return
+        if self.path == "/api/map-package/regroup":
+            grouped = backfill_package_groups()
+            self.send_json(200, {"ok": True, "message": f"已归组 {grouped} 组"})
             return
         if self.path == "/api/addon/state":
             filename = fields.get("filename", [""])[0]
@@ -4724,7 +5426,7 @@ def main():
         raise SystemExit("L4D2_WEB_PASSWORD must be set")
     recover_interrupted_jobs()
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Serving L4D2 manager on {host}:{port}")
+    print(f"Serving L4D2 manager on {host}:{port} with UI mode {UI_MODE}")
     server.serve_forever()
 
 

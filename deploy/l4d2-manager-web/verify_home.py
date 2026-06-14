@@ -2,6 +2,7 @@
 import base64
 import http.cookiejar
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -69,7 +70,18 @@ print("login", status)
 status, headers, body = open_url(opener, "/")
 assert status == 200, status
 assert "L4D2 Server Manager" in body
-print("session_home", status, len(body))
+is_react = 'id="root"' in body and "/assets/" in body
+is_legacy = 'id="overview"' in body or 'id="rooms"' in body
+assert is_react or is_legacy, "home must render React shell or legacy UI"
+print("session_home", status, len(body), "react" if is_react else "legacy")
+
+if is_react:
+    asset_match = re.search(r'src="([^"]+/assets/[^"]+\.js)"', body)
+    assert asset_match, "React shell must reference a JS asset"
+    status, headers, asset_body = open_url(opener, asset_match.group(1))
+    assert status == 200, status
+    assert "javascript" in headers.get("Content-Type", "") or asset_body
+    print("react_asset", status, len(asset_body))
 
 status, headers, body = open_url(opener, "/api/state")
 assert status == 200, status

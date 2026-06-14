@@ -17,6 +17,7 @@ if ! id l4d2web >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 "$APP_DIR"
+install -d -m 0755 "$APP_DIR/static"
 install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR"
 install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/jobs"
 install -d -o l4d2web -g l4d2web -m 0750 "$STATE_DIR/uploads"
@@ -26,6 +27,13 @@ install -m 0755 l4d2-webctl /usr/local/bin/l4d2-webctl
 install -m 0644 vpk_extract.py "$APP_DIR/vpk_extract.py"
 install -m 0644 l4d2-manager-web.service "$SERVICE_FILE"
 install -m 0440 l4d2-manager-web.sudoers "$SUDOERS_FILE"
+find "$APP_DIR/static" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+if [[ -d static ]]; then
+  cp -a static/. "$APP_DIR/static/"
+  chmod -R a+rX "$APP_DIR/static"
+else
+  echo "React static directory not found; service will fall back to legacy UI"
+fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
   password="$(python3 - <<'PY'
@@ -46,6 +54,7 @@ L4D2_WEB_PORT=8080
 L4D2_WEB_USER=admin
 L4D2_WEB_PASSWORD=$password
 L4D2_WEB_SESSION_SECRET=$session_secret
+L4D2_WEB_UI=react
 EOF
   chmod 0600 "$ENV_FILE"
   echo "Created $ENV_FILE"
@@ -60,6 +69,11 @@ PY
     printf '\nL4D2_WEB_SESSION_SECRET=%s\n' "$session_secret" >>"$ENV_FILE"
     chmod 0600 "$ENV_FILE"
     echo "Added L4D2_WEB_SESSION_SECRET to $ENV_FILE"
+  fi
+  if ! grep -q '^L4D2_WEB_UI=' "$ENV_FILE"; then
+    printf '\nL4D2_WEB_UI=react\n' >>"$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
+    echo "Added L4D2_WEB_UI to $ENV_FILE"
   fi
 fi
 

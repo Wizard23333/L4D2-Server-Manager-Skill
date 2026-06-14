@@ -86,7 +86,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **手动提取**：推荐的 VPK 资源提取方案，提升服务器稳定性。
 - **快速切图**：详细的 RCON 远程指令集，实现秒级地图切换。
 - **远程管理**：配置 SSH 别名，简化服务器维护操作。
-- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、Steam Workshop 优先搜索安装三方地图、后台显示/取消下载任务，并区分 Map Packages 与普通 Mod。
+- **可选 Web 面板**：提供浏览器入口，用于查看房间状态、按战役切换默认地图、Steam Workshop / GameMaps 搜索安装、后台任务管理、Map Packages 与普通 Mod 分离，以及 React 前端体验。
 - **故障排查**：针对常见报错（如 KeyValues Error）的修复指南。
 - **安全脱敏**：公开文档只使用占位符，不记录真实 RCON、GSLT、Steam token 或 SSH 凭据。
 
@@ -118,15 +118,24 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 如果希望用浏览器做日常管理，可以部署 `deploy/l4d2-manager-web/` 下的轻量面板。它不是使用本仓库 skill/playbook 的必要条件；只用 SSH、RCON 和脚本仍然是完整可用的主流程。
 
 - **安装入口**：`deploy/l4d2-manager-web/install.sh`，会安装 systemd unit、sudoers 白名单、`l4d2-webctl` 和 `vpk_extract.py`。
-- **核心文件**：`app.py`、`l4d2-webctl`、`vpk_extract.py`、`l4d2-manager-web.service`、`l4d2-manager-web.sudoers`。
-- **主要功能**：房间状态查看、默认地图按战役/子地图切换、`Search & Install` 搜索安装 Workshop / GameMaps 地图、后台任务进度条和取消、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
+- **核心文件**：`app.py`、`l4d2-webctl`、`vpk_extract.py`、`l4d2-manager-web.service`、`l4d2-manager-web.sudoers`，以及 `frontend/` React 源码和构建后的 `static/` 静态资源。
+- **前端形态**：默认使用 React 18 + Vite 前端；`L4D2_WEB_UI=legacy` 可回退到后端内置旧页面。构建命令位于 `deploy/l4d2-manager-web/frontend/package.json`。
+- **主要功能**：房间状态查看、默认地图按战役/子地图切换、`Search & Install` 搜索安装 Workshop / GameMaps 地图、后台任务进度条、取消/删除/重跑任务、Map Packages 与 Mod Management 分离、启用/禁用已有 `.vpk`。
+- **下载与安装模式**：支持服务器直连下载、浏览器侧 Proxy Download 后上传、已下载 `.vpk` 智能直传校验，以及 Manifest/ZIP/VPK 导入导出；Workshop 多 part/合集会按来源记录分组。
 - **地图包管理**：Map Packages 支持 `Reinstall`、普通删除、彻底删除、单个导出和批量导出；普通删除保留来源记录，后续可以从面板恢复安装。
 - **迁移能力**：推荐使用轻量 JSON Manifest 导出 Workshop 地图/Mod 的 ID 与来源记录，导入后手动重新下载；大文件 ZIP / `.vpk` 导入导出仍保留为离线迁移方式。
 - **任务与记录**：安装任务持久化到 `/var/lib/l4d2-manager-web/jobs/`，地图包来源记录保存在 `/var/lib/l4d2-manager-web/packages.json`，页面刷新后仍能查看进度和重装入口。
-- **API 能力**：`/api/catalog/search` 与 `/api/catalog/install` 用于搜索和安装候选项；`/api/manifest/export`、`/api/manifest/import` 和 `/api/manifest/install` 用于轻量迁移记录；旧的 `/api/workshop/install` 仍保留兼容。
+- **API 能力**：`/api/catalog/search` 与 `/api/catalog/install` 用于搜索和安装候选项；`/api/workshop/resolve`、`/api/workshop/parts` 和 `/api/upload/workshop` 支持浏览器侧下载与智能直传；`/api/manifest/export`、`/api/manifest/import` 和 `/api/manifest/install` 用于轻量迁移记录；旧的 `/api/workshop/install` 仍保留兼容。
 - **访问条件**：面板默认监听 `8080/tcp`，需要服务器本机 `ufw` 和云安全组都放行。
 - **登录配置**：浏览器使用页面内登录表单和 session cookie；脚本仍兼容 Basic Authorization。账号密码保存在服务器 `/etc/l4d2-manager-web.env`，不要把真实密码写入文档、Issue、提交说明或聊天记录。
 - **安全边界**：需要 root 权限的操作只通过 `/usr/local/bin/l4d2-webctl` 和 sudoers 白名单完成；GameMaps 只接受数字 details id，不提供任意 URL 或 shell 输入。
+
+## 📌 当前状态与待完成
+
+- **已完成并验证**：Web 面板前端已从后端内置页面迁移到 React 前端，并保留 legacy 回退模式。
+- **已完成并验证**：下载/安装链路已支持服务器直连、浏览器侧 Proxy Download、智能直传校验、后台任务重跑，以及多 part Workshop 分组安装。
+- **进行中，暂不作为稳定发布范围**：服务器插件管理与自定义插件体验仍在继续打磨，提交或发布前应单独复核备份、回滚、启用/禁用和重启房间流程。
+- **后续建议**：继续补充端到端验证脚本，覆盖 React 静态资源加载、下载失败重试、智能直传大小匹配、多 part 合集安装和任务重跑。
 
 ## ⚡ 4. 实时切换地图 (RCON)
 无需重启服务器，在游戏控制台中：

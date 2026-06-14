@@ -89,7 +89,7 @@ $l4d2-manager inspect addons, maps, and workshop cache usage, then suggest clean
 - **Manual VPK extraction**: Recommended workflow for extracting VPK content into the game directory when direct addon loading is not enough.
 - **Fast map switching**: RCON commands for changing maps without restarting the server.
 - **Remote operations**: SSH alias usage for repeatable server maintenance.
-- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Steam-first Workshop map search, cancellable background install progress, and separating Map Packages from regular Mods.
+- **Optional Web panel**: Browser entry point for room status, campaign-based default-map switching, Workshop / GameMaps search and install, background job management, separating Map Packages from regular Mods, and the React frontend experience.
 - **Troubleshooting notes**: Practical fixes for common issues such as KeyValues errors, missing resources, and repeated client downloads.
 - **Secret redaction**: Public docs use placeholders only and do not record real RCON passwords, GSLT values, Steam tokens, or SSH credentials.
 
@@ -126,15 +126,24 @@ Before installing the game server, prepare the network path to Steam. This is es
 For browser-based day-to-day operations, deploy the lightweight package under `deploy/l4d2-manager-web/`. This panel is not required for the skill/playbook workflow; SSH, RCON, and the command-line scripts remain the primary complete path.
 
 - **Installer**: `deploy/l4d2-manager-web/install.sh`, which installs the systemd unit, sudoers whitelist, `l4d2-webctl`, and `vpk_extract.py`.
-- **Core files**: `app.py`, `l4d2-webctl`, `vpk_extract.py`, `l4d2-manager-web.service`, and `l4d2-manager-web.sudoers`.
-- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, cancellable background install progress, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **Core files**: `app.py`, `l4d2-webctl`, `vpk_extract.py`, `l4d2-manager-web.service`, `l4d2-manager-web.sudoers`, plus the `frontend/` React source and built `static/` assets.
+- **Frontend shape**: React 18 plus Vite is the default UI; set `L4D2_WEB_UI=legacy` to fall back to the backend-rendered legacy page. Build commands live in `deploy/l4d2-manager-web/frontend/package.json`.
+- **Features**: Room status, campaign/chapter default-map switching, `Search & Install` for Workshop / GameMaps map candidates, background job progress, cancel/delete/rerun controls, Map Packages versus Mod Management separation, and enable/disable controls for existing `.vpk` files.
+- **Download and install modes**: Supports server-side direct download, browser-side Proxy Download followed by upload, smart verified `.vpk` upload, and Manifest/ZIP/VPK import/export. Multi-part Workshop items and collections are grouped by source metadata.
 - **Map package management**: Map Packages support `Reinstall`, Soft Delete, Purge Delete, single export, and bulk export. Soft Delete removes local files while keeping the source record for later reinstall.
 - **Transfer workflow**: The preferred migration path is a lightweight JSON Manifest that stores Workshop ids and package metadata for maps and mods; imports create remote records that can be reinstalled manually. Large ZIP exports containing `.vpk` files remain available for offline transfers.
 - **Jobs and records**: Install jobs persist under `/var/lib/l4d2-manager-web/jobs/`, and package source records live in `/var/lib/l4d2-manager-web/packages.json`, so refreshes can still show progress and reinstall entries.
-- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; `/api/manifest/export`, `/api/manifest/import`, and `/api/manifest/install` manage lightweight migration records; the older `/api/workshop/install` remains available for compatibility.
+- **API surface**: `/api/catalog/search` and `/api/catalog/install` provide candidate search and install jobs; `/api/workshop/resolve`, `/api/workshop/parts`, and `/api/upload/workshop` support browser-side downloads and smart verified uploads; `/api/manifest/export`, `/api/manifest/import`, and `/api/manifest/install` manage lightweight migration records; the older `/api/workshop/install` remains available for compatibility.
 - **Network access**: The panel listens on `8080/tcp` by default, so both the local firewall such as `ufw` and the cloud security group must allow that port.
 - **Authentication**: The browser uses an in-page login form with a session cookie; Basic Authorization is still accepted for scripts. Credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
 - **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. GameMaps installs accept only numeric details ids; the panel does not expose arbitrary URL downloads or shell execution.
+
+## Current Status and TODO
+
+- **Completed and verified**: The Web panel frontend has moved from backend-rendered pages to a React frontend, with a legacy fallback still available.
+- **Completed and verified**: The download/install flow supports server-side direct download, browser-side Proxy Download, smart verified upload, background job reruns, and grouped multi-part Workshop installs.
+- **In progress, not part of the stable release scope yet**: Server plugin management and custom plugin UX still need separate review, including backup, rollback, enable/disable, and room restart flows.
+- **Recommended next steps**: Add end-to-end verification for React static asset loading, download retry failures, smart upload size matching, multi-part collection installs, and job reruns.
 
 ## 4. Live Map Switching With RCON
 

@@ -119,9 +119,30 @@ def extract(vpk_path, target_dir):
     print(f"extracted {extracted} files from {vpk_path.name}")
 
 
+def verify(vpk_path):
+    vpk_path = Path(vpk_path)
+    if not vpk_path.is_file():
+        fail(f"VPK not found: {vpk_path}")
+    file_len = os.path.getsize(vpk_path)
+    checked = 0
+    for entry in iter_entries(vpk_path):
+        if entry["archive_index"] != INLINE_ARCHIVE:
+            fail("Multi-part VPK archives are not supported by this extractor")
+        end = entry["data_start"] + entry["entry_offset"] + entry["entry_size"]
+        if end > file_len:
+            fail(
+                f"VPK is truncated: {entry['name']} needs {end} bytes but file is {file_len}"
+            )
+        checked += 1
+    print(f"verified {checked} entries, {file_len} bytes from {vpk_path.name}")
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--verify":
+        verify(sys.argv[2])
+        return
     if len(sys.argv) != 3:
-        fail("usage: vpk_extract.py <input.vpk> <target_dir>")
+        fail("usage: vpk_extract.py <input.vpk> <target_dir> | vpk_extract.py --verify <input.vpk>")
     extract(sys.argv[1], sys.argv[2])
 
 

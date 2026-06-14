@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+node_modules/
+.npm-cache/
+deploy/l4d2-manager-web/frontend/dist/
 
 # Accidental duplicate directory with a leading space; keep the real .trae/ tracked.
  .trae/
