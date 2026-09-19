@@ -54,16 +54,28 @@ def iter_entries(vpk_path):
         else:
             fail(f"Unsupported VPK version: {version}")
         data_start = header_size + tree_size
+        # The directory tree occupies exactly [header_size, header_size+tree_size).
+        # Some workshop VPKs carry stray/garbage bytes right after the tree; the
+        # parser must stop at this boundary (and honour the mandatory 0xFFFF
+        # per-entry terminator) instead of mis-reading that noise as bogus
+        # entries with out-of-range archive_index values.
+        tree_end = header_size + tree_size
         handle.seek(header_size)
         while True:
+            if handle.tell() >= tree_end:
+                break
             extension = read_null_string(handle)
             if not extension:
                 break
             while True:
+                if handle.tell() >= tree_end:
+                    break
                 path = read_null_string(handle)
                 if not path:
                     break
                 while True:
+                    if handle.tell() >= tree_end:
+                        break
                     filename = read_null_string(handle)
                     if not filename:
                         break
@@ -71,6 +83,10 @@ def iter_entries(vpk_path):
                     if len(entry_data) != 18:
                         fail("VPK tree entry is truncated")
                     _crc, preload_bytes, archive_index, entry_offset, entry_size, _term = struct.unpack("<IHHIIH", entry_data)
+                    if _term != 0xFFFF:
+                        # Non-conforming terminator marks the real end of the
+                        # directory tree (trailing garbage). Stop cleanly.
+                        return
                     preload = handle.read(preload_bytes)
                     path_name = "" if path in (" ", ".") else path
                     entry_name = f"{path_name}/{filename}.{extension}" if path_name else f"{filename}.{extension}"

@@ -76,7 +76,7 @@ assert is_react or is_legacy, "home must render React shell or legacy UI"
 print("session_home", status, len(body), "react" if is_react else "legacy")
 
 if is_react:
-    asset_match = re.search(r'src="([^"]+/assets/[^"]+\.js)"', body)
+    asset_match = re.search(r'src="([^"]*/assets/[^"]+\.js)"', body)
     assert asset_match, "React shell must reference a JS asset"
     status, headers, asset_body = open_url(opener, asset_match.group(1))
     assert status == 200, status

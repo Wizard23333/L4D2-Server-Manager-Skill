@@ -1,0 +1,20 @@
+- [x] `fetch_description_sibling_ids(workshop_id, kind)` 已实现：解析描述中的 `id=`/`filedetails/?id=` 引用，去重、剔除自身、按上限截断，逐个用 `resolve_single_workshop_download` 校验后返回 `[主ID]+兄弟ID`，无有效兄弟返回 `[]`
+- [x] 描述兄弟包发现不依赖 `STEAM_WEB_API_KEY`（仅用匿名 `STEAM_DETAILS_URL`）
+- [x] `create_install_job` 在 curated/collection/meta.children 之后接入描述兄弟包兜底
+- [x] `create_catalog_install_job` 在退回 `[item_id]` 之前接入描述兄弟包兜底
+- [x] `workshop_expected_parts` 接入描述兄弟包兜底，预览 parts 与实际安装一致
+- [x] 前序来源已产出多包时不再触发描述解析（避免多余请求与误报）
+- [x] `KNOWN_CATALOG_ITEMS` 新增 `Left 4 SGC Beta v2.2`，`install_ids: ["1713617501","1713621105"]`
+- [x] 多包 map 安装后若整组无任何 `.bsp`，任务成功消息追加可操作告警
+- [x] 单包安装与无有效引用场景行为不变（无误报、无回归）
+- [x] `Handler.server_version` 已更新为带 fix 的版本号
+- [x] `python3 -m py_compile app.py` 通过（语法无误）
+- [x] `vpk_extract.py` 的 `iter_entries` 使用 `tree_end = header_size + tree_size` 边界，越界即停止解析目录项
+- [x] `vpk_extract.py` 校验目录项 2 字节终止符 `0xFFFF`，`term != 0xFFFF` 时收尾停止，不误判为分卷
+- [x] 边界内合法条目仍保留 `archive_index != 0x7FFF` 的真正多分卷报错行为（无回归）
+- [x] `l4d2-webctl` 内 `vpk_maps()` 与 `vpk_entries()` 同步加入边界 + 终止符收尾判定
+- [x] `python3 -m py_compile vpk_extract.py l4d2-webctl` 通过
+- [x] 服务器上对 b包 `3743875149` 运行 `--verify` 与 `extract` 成功（合法条目 5566，不再报“Multi-part VPK”）
+- [x] 修复后的 `vpk_extract.py` 与 `l4d2-webctl` 已部署到服务器（原文件已备份、属主/权限正确）
+- [x] 以面板真实调用方式安装 `3743875149`、`3743877283` 成功，切图列表出现江门新会各章节 `.bsp`
+- [x] 面板 `Handler.server_version` 提升到新的 fix 版本号（如 `L4D2Manager/0.3`）并部署

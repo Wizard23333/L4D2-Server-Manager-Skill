@@ -55,6 +55,7 @@ L4D2_WEB_USER=admin
 L4D2_WEB_PASSWORD=$password
 L4D2_WEB_SESSION_SECRET=$session_secret
 L4D2_WEB_UI=react
+L4D2_DOWNLOAD_PROXY=
 EOF
   chmod 0600 "$ENV_FILE"
   echo "Created $ENV_FILE"
@@ -74,6 +75,11 @@ PY
     printf '\nL4D2_WEB_UI=react\n' >>"$ENV_FILE"
     chmod 0600 "$ENV_FILE"
     echo "Added L4D2_WEB_UI to $ENV_FILE"
+  fi
+  if ! grep -q '^L4D2_DOWNLOAD_PROXY=' "$ENV_FILE"; then
+    printf '\nL4D2_DOWNLOAD_PROXY=\n' >>"$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
+    echo "Added disabled-by-default L4D2_DOWNLOAD_PROXY to $ENV_FILE"
   fi
 fi
 

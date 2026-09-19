@@ -66,12 +66,15 @@ SESSION_SECRET = os.environ.get("L4D2_WEB_SESSION_SECRET", "")
 SESSION_TTL_SECONDS = int(os.environ.get("L4D2_WEB_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 SESSION_COOKIE_SECURE = os.environ.get("L4D2_WEB_COOKIE_SECURE", "0") == "1"
 STEAM_WEB_API_KEY = os.environ.get("STEAM_WEB_API_KEY", "")
+DEFAULT_DOWNLOAD_PROXY = ""
+DOWNLOAD_PROXY = os.environ.get("L4D2_DOWNLOAD_PROXY", DEFAULT_DOWNLOAD_PROXY).strip()
 AUTH_REALM = "L4D2 Manager"
 WORKSHOP_ID_RE = re.compile(r"^[0-9]{4,20}$")
 ADDON_RE = re.compile(r"^[A-Za-z0-9_. -]{1,180}\.vpk$")
 JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 STAGED_UPLOAD_RE = re.compile(r"^upload_[a-f0-9]{12}_[a-f0-9]{12}\.(vpk|zip)$")
 SERVER_PLUGIN_ID_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+SERVER_PLUGIN_FILE_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}\.smx$")
 CATALOG_FORBIDDEN_CHARS = set('/\\<>[]{}$;|`')
 MANIFEST_FORMAT = "l4d2-manager-web-manifest"
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -118,6 +121,45 @@ SERVER_PLUGIN_DEFS = [
         "required": False,
     },
 ]
+# 已知插件文件名 -> 友好标签，用于美化动态扫描结果（其余插件直接用文件名）。
+SERVER_PLUGIN_LABELS = {
+    "left4dhooks.smx": "Left 4 DHooks Direct",
+    "l4d_infected_hp.smx": "Infected Health Gauge",
+    "l4d2_infected_hp.smx": "Infected Health Gauge",
+    "l4d_kill.smx": "Self-Kill Command (!zs)",
+    "l4d2_kill_counter.smx": "Kill Counter",
+    "advertisements.smx": "Advertisements / Welcome Message",
+    "infected_counter.smx": "Infected Counter HUD",
+    "showdamage.smx": "Show Damage",
+    "l4d2_sb_fix.smx": "Survivor Bot Fix / Improved",
+}
+
+
+def normalize_proxy_url(proxy):
+    if not proxy:
+        return ""
+    if "://" not in proxy:
+        return "http://" + proxy
+    return proxy
+
+
+def configure_download_proxy():
+    proxy = normalize_proxy_url(DOWNLOAD_PROXY)
+    if not proxy:
+        return
+    urllib.request.install_opener(
+        urllib.request.build_opener(
+            urllib.request.ProxyHandler({
+                "http": proxy,
+                "https": proxy,
+            })
+        )
+    )
+
+
+configure_download_proxy()
+# 受保护、禁止从面板禁用的核心依赖（缺失会导致大量插件无法加载）。
+PROTECTED_PLUGIN_FILES = {"left4dhooks.smx"}
 DISK_TARGETS = [
     {"id": "root", "label": "Root", "path": Path("/")},
     {"id": "l4d2", "label": "L4D2", "path": Path("/opt/l4d2")},
@@ -193,6 +235,32 @@ KNOWN_CATALOG_ITEMS = [
         "installable": True,
         "reason": "",
         "aliases": ["yama", "l4d_yama", "yama japan"],
+    },
+    {
+        "source": "workshop",
+        "id": "3743921409",
+        "install_ids": ["3743921409", "3743875149", "3743877283"],
+        "title": "江门新会 0.51 / Jiangmen Xinhuai 0.51",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="3743921409"),
+        "size": "3 packages",
+        "summary": "Multi-package campaign. Installs the main package plus resource packs B and C.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["江门新会", "jiangmen", "xinhuai", "jiangmen xinhuai", "jiangmen-xinhuai"],
+    },
+    {
+        "source": "workshop",
+        "id": "1713617501",
+        "install_ids": ["1713617501", "1713621105"],
+        "title": "Left 4 SGC Beta v2.2",
+        "kind": "map",
+        "url": STEAM_WORKSHOP_URL.format(id="1713617501"),
+        "size": "2 packages",
+        "summary": "Multi-package campaign. Part 1 of 2 holds materials/models; part 2 of 2 holds the maps. Installs both.",
+        "installable": True,
+        "reason": "",
+        "aliases": ["left 4 sgc", "sgc", "l4sgc", "left4sgc"],
     },
     {
         "source": "workshop",
@@ -1034,30 +1102,35 @@ def system_snapshot():
     }
 
 
-def server_plugin_file_state(filenames):
-    for filename in filenames:
-        enabled_path = SM_PLUGINS_DIR / filename
-        if enabled_path.exists():
-            return "enabled", filename, enabled_path
-        disabled_path = SM_DISABLED_DIR / filename
-        if disabled_path.exists():
-            return "disabled", filename, disabled_path
-    return "missing", filenames[0], None
+def server_plugin_label(filename):
+    return SERVER_PLUGIN_LABELS.get(filename, filename[:-4] if filename.endswith(".smx") else filename)
 
 
 def server_plugins_snapshot():
+    # 动态扫描 plugins/（启用）与 plugins/disabled/（禁用），覆盖所有 .smx 插件，
+    # 而不仅限于预置清单，这样新装的任意插件都能在面板上启用/禁用。
+    found = {}
+    if SM_PLUGINS_DIR.is_dir():
+        for path in SM_PLUGINS_DIR.glob("*.smx"):
+            if path.is_file():
+                found[path.name] = ("enabled", path)
+    if SM_DISABLED_DIR.is_dir():
+        for path in SM_DISABLED_DIR.glob("*.smx"):
+            if path.is_file() and path.name not in found:
+                found[path.name] = ("disabled", path)
     plugins = []
-    for item in SERVER_PLUGIN_DEFS:
-        state, filename, path = server_plugin_file_state(item["filenames"])
+    for filename in sorted(found):
+        state, path = found[filename]
+        protected = filename in PROTECTED_PLUGIN_FILES
         plugins.append(
             {
-                "id": item["id"],
-                "label": item["label"],
-                "filenames": item["filenames"],
+                "id": filename,
+                "label": server_plugin_label(filename),
                 "filename": filename,
                 "state": state,
-                "size": path.stat().st_size if path and path.exists() else 0,
-                "required": item.get("required", False),
+                "size": path.stat().st_size if path.exists() else 0,
+                "required": protected,
+                "protected": protected,
             }
         )
     return {
@@ -1522,6 +1595,48 @@ def fetch_workshop_meta(workshop_id):
     return meta
 
 
+def fetch_description_sibling_ids(workshop_id, kind):
+    """Discover sibling package ids referenced only in a workshop item's description.
+
+    Some multi-part maps declare the package that actually contains the ``.bsp``
+    solely in the human-readable description text (e.g. "Part 2 NEEDED TOO ...
+    id=1713621105") rather than through collection/GetDetails ``children``. This
+    parses those ``id=<digits>`` references from the anonymous
+    GetPublishedFileDetails endpoint (no ``STEAM_WEB_API_KEY`` required), validates
+    each candidate resolves to a real downloadable ``file_url``, and returns the
+    ordered id list ``[workshop_id, *validated_siblings]``; returns [] when nothing
+    valid is found so callers fall back to the previous single-package behaviour."""
+    if not WORKSHOP_ID_RE.match(str(workshop_id)):
+        return []
+    try:
+        payload = http_json(STEAM_DETAILS_URL, {"itemcount": "1", "publishedfileids[0]": str(workshop_id)})
+        details = payload.get("response", {}).get("publishedfiledetails", [{}])[0]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, IndexError):
+        return []
+    description = details.get("description") or ""
+    matches = re.findall(r"(?:filedetails/\?id=|[?&]id=|\bid=)(\d{4,20})", description, re.I)
+    candidates = []
+    for candidate_id in matches:
+        if candidate_id == str(workshop_id):
+            continue
+        if candidate_id not in candidates:
+            candidates.append(candidate_id)
+        if len(candidates) >= 8:
+            break
+    if not candidates:
+        return []
+    validated = []
+    for candidate_id in candidates:
+        if not WORKSHOP_ID_RE.match(candidate_id):
+            continue
+        result = resolve_single_workshop_download(candidate_id, kind)
+        if result.get("ok"):
+            validated.append(candidate_id)
+    if not validated:
+        return []
+    return [str(workshop_id)] + validated
+
+
 def backfill_package_groups():
     """Re-derive group relationships for already-installed workshop map packages.
 
@@ -1788,7 +1903,9 @@ def workshop_expected_parts(workshop_id, kind):
     workshop_id = str(workshop_id)
     if not WORKSHOP_ID_RE.match(workshop_id):
         return {"ok": False, "message": "Invalid workshop id"}
-    ids = fetch_collection_children(workshop_id)
+    ids = known_install_ids("workshop", kind, workshop_id)
+    if not ids:
+        ids = fetch_collection_children(workshop_id)
     collection = bool(ids)
     title = ""
     if not ids:
@@ -1801,6 +1918,11 @@ def workshop_expected_parts(workshop_id, kind):
         children = meta.get("children") or []
         if children:
             ids = [workshop_id] + [cid for cid in children if cid != workshop_id]
+    if not ids:
+        siblings = fetch_description_sibling_ids(workshop_id, kind)
+        if len(siblings) > 1:
+            ids = siblings
+            collection = True
     if not ids:
         ids = [workshop_id]
     parts = [resolve_single_workshop_download(cid, kind) for cid in ids]
@@ -2247,22 +2369,39 @@ def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="",
         results = []
         failure = None
         cancelled = False
-        with ThreadPoolExecutor(max_workers=min(PARALLEL_DOWNLOADS, total_items)) as executor:
-            futures = {
-                executor.submit(install_one, index, current_id): current_id
-                for index, current_id in enumerate(item_ids, 1)
-            }
-            for future in as_completed(futures):
+        if source == "workshop" and kind == "map" and total_items > 1:
+            # Map packages extract into the same left4dead2 tree. Keep bundle
+            # installs serial to avoid races on shared files such as missions.
+            for index, current_id in enumerate(item_ids, 1):
                 try:
-                    result = future.result()
+                    result = install_one(index, current_id)
                 except Exception as exc:  # noqa: BLE001
                     failure = {"ok": False, "message": str(exc)}
-                    continue
+                    break
                 results.append(result)
                 if result.get("cancelled"):
                     cancelled = True
-                elif not result.get("ok") and failure is None:
+                    break
+                if not result.get("ok"):
                     failure = result
+                    break
+        else:
+            with ThreadPoolExecutor(max_workers=min(PARALLEL_DOWNLOADS, total_items)) as executor:
+                futures = {
+                    executor.submit(install_one, index, current_id): current_id
+                    for index, current_id in enumerate(item_ids, 1)
+                }
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        failure = {"ok": False, "message": str(exc)}
+                        continue
+                    results.append(result)
+                    if result.get("cancelled"):
+                        cancelled = True
+                    elif not result.get("ok") and failure is None:
+                        failure = result
 
         if cancelled or job_status(job_id) == "cancelled":
             cleanup_job_temp(job_id)
@@ -2317,6 +2456,19 @@ def install_catalog_bundle_job(job_id, source, kind, item_ids, title="", url="",
             if kind == "map" and addon and addon.get("maps") and not addon.get("missions"):
                 messages.append(f"{result['filename']} installed, but no mission file was found; maps may be grouped by package name.")
 
+        if kind == "map" and total_items > 1:
+            installed_filenames = {r.get("filename") for r in results if r.get("filename")}
+            inventory = vpk_inventory()
+            group_has_bsp = any(
+                item.get("maps")
+                for item in inventory
+                if item.get("filename") in installed_filenames
+            )
+            if not group_has_bsp:
+                messages.append(
+                    "警告：本次多包安装完成后未检测到任何 .bsp 地图文件，该战役可能仍缺少含地图的依赖包，请确认是否需要补装其余包。"
+                )
+
         update_job(
             job_id,
             status="succeeded",
@@ -2353,6 +2505,10 @@ def create_catalog_install_job(source, kind, item_id, title="", url="", install_
         item_ids = fetch_collection_children(item_id)
     if not item_ids and source == "workshop":
         item_ids = fetch_required_children(item_id)
+    if not item_ids and source == "workshop":
+        siblings = fetch_description_sibling_ids(item_id, kind)
+        if len(siblings) > 1:
+            item_ids = siblings
     if not item_ids:
         item_ids = [item_id]
     if source != "workshop" and len(item_ids) > 1:
@@ -2403,15 +2559,20 @@ def create_install_job(kind, workshop_id):
     # back to installing only the single queried item).
     meta = fetch_workshop_meta(workshop_id)
     title = meta.get("title") or f"Workshop {workshop_id}"
-    install_ids = None
+    install_ids = known_install_ids("workshop", kind, workshop_id) or None
     # A workshop item may declare parts either as a collection or via children.
-    children = fetch_collection_children(workshop_id)
-    if not children:
-        meta_children = meta.get("children") or []
-        if meta_children:
-            children = [workshop_id] + [cid for cid in meta_children if cid != workshop_id]
-    if children:
-        install_ids = children
+    if not install_ids:
+        children = fetch_collection_children(workshop_id)
+        if not children:
+            meta_children = meta.get("children") or []
+            if meta_children:
+                children = [workshop_id] + [cid for cid in meta_children if cid != workshop_id]
+        if children:
+            install_ids = children
+    if not install_ids:
+        siblings = fetch_description_sibling_ids(workshop_id, kind)
+        if len(siblings) > 1:
+            install_ids = siblings
     return create_catalog_install_job(
         "workshop",
         kind,
@@ -2486,15 +2647,17 @@ def create_plugin_stack_job():
     return {"ok": True, "message": "Plugin install queued", "job": job}
 
 
-def set_server_plugin_state(plugin_id, state):
-    if not SERVER_PLUGIN_ID_RE.match(plugin_id) or state not in {"enabled", "disabled"}:
+def set_server_plugin_state(plugin_file, state):
+    if not SERVER_PLUGIN_FILE_RE.match(plugin_file) or state not in {"enabled", "disabled"}:
         return {"ok": False, "message": "Invalid server plugin request"}
+    if plugin_file in PROTECTED_PLUGIN_FILES and state == "disabled":
+        return {"ok": False, "message": f"{plugin_file} is protected and cannot be disabled"}
     result = run_cmd(
-        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "set-server-plugin-state", plugin_id, state],
+        ["/usr/bin/sudo", "-n", "/usr/local/bin/l4d2-webctl", "set-server-plugin-state", plugin_file, state],
         timeout=20,
     )
     if result["ok"]:
-        return {"ok": True, "message": result["stdout"] or f"{plugin_id} {state}"}
+        return {"ok": True, "message": result["stdout"] or f"{plugin_file} {state}"}
     return {"ok": False, "message": result["stderr"] or result["stdout"] or "Server plugin update failed"}
 
 
@@ -4192,9 +4355,11 @@ def render_page():
         const target = plugin.state === "enabled" ? "disabled" : "enabled";
         const label = plugin.state === "enabled" ? "Disable" : "Enable";
         const stateClass = plugin.state === "enabled" ? "ok" : (plugin.state === "missing" ? "warn" : "");
-        const action = plugin.state === "missing"
-          ? ""
-          : `<button data-server-plugin="${esc(plugin.id)}" data-server-plugin-state="${target}">${label}</button>`;
+        const action = plugin.protected
+          ? `<span class="muted">Protected</span>`
+          : (plugin.state === "missing"
+            ? ""
+            : `<button data-server-plugin="${esc(plugin.id)}" data-server-plugin-state="${target}">${label}</button>`);
         const size = plugin.size ? `${(plugin.size / 1024).toFixed(1)} KB` : "";
         return `<div class="row">
           <div>
@@ -5105,7 +5270,7 @@ def static_file_for_path(request_path):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "L4D2Manager/0.1"
+    server_version = "L4D2Manager/0.3"
 
     def basic_authenticated(self):
         if not ADMIN_PASSWORD:

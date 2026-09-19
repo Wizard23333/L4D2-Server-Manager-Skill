@@ -1,12 +1,14 @@
 # AI IDE Installation Guide
 
-This repository keeps one canonical skill:
+This repository keeps one canonical skill suite:
 
 ```text
-skills/l4d2-manager/SKILL.md
+skills/
+  l4d2-manager/SKILL.md          # entry-point router
+  l4d2-*/SKILL.md                # six focused sub-skills
 ```
 
-Use this file directly in AI tools that support `SKILL.md`. For tools that do not load skills natively, add a small rule or custom-instructions file that tells the agent to read `skills/l4d2-manager/SKILL.md` before doing L4D2 server work.
+Install the complete `skills/` directory in AI tools that support `SKILL.md`; the router depends on its sibling skills. For tools that do not load skills natively, keep the repository available and add a small rule or custom-instructions file that tells the agent to read `skills/l4d2-manager/SKILL.md` first, then follow its routing table.
 
 Do not copy real RCON passwords, GSLT values, Steam tokens, SSH private keys, proxy subscriptions, or server credentials into any shared skill, rule, prompt, issue, or README.
 
@@ -16,10 +18,10 @@ Do not copy real RCON passwords, GSLT values, Steam tokens, SSH private keys, pr
 
 | Tool | Best integration | Project path | Global path | Invocation |
 | --- | --- | --- | --- | --- |
-| Codex / OpenAI Skills | Native `SKILL.md` skill | `skills/l4d2-manager/` in this repo, or install into Codex | `$CODEX_HOME/skills/l4d2-manager`, usually `~/.codex/skills/l4d2-manager` | `$l4d2-manager` or natural language |
-| Claude Code | Native Agent Skill | `.claude/skills/l4d2-manager/` | `~/.claude/skills/l4d2-manager/` | Auto, or `/l4d2-manager` where supported |
-| Windsurf Cascade | Native Cascade Skill | `.windsurf/skills/l4d2-manager/` | `~/.codeium/windsurf/skills/l4d2-manager/` | Auto, or `@l4d2-manager` |
-| Cline | Native Skill, experimental | `.cline/skills/l4d2-manager/` | `~/.cline/skills/l4d2-manager/` | Auto after Skills are enabled |
+| Codex / OpenAI Skills | Native `SKILL.md` skills | `skills/` in this repo, or install every child into Codex | `$CODEX_HOME/skills/l4d2-*`, usually `~/.codex/skills/l4d2-*` | `$l4d2-manager` or natural language |
+| Claude Code | Native Agent Skills | `.claude/skills/l4d2-*/` | `~/.claude/skills/l4d2-*/` | Auto, or `/l4d2-manager` where supported |
+| Windsurf Cascade | Native Cascade Skills | `.windsurf/skills/l4d2-*/` | `~/.codeium/windsurf/skills/l4d2-*/` | Auto, or `@l4d2-manager` |
+| Cline | Native Skills, experimental | `.cline/skills/l4d2-*/` | `~/.cline/skills/l4d2-*/` | Auto after Skills are enabled |
 | Cursor | Project Rule or `AGENTS.md` | `.cursor/rules/l4d2-manager.mdc` or root `AGENTS.md` | User Rules in Cursor settings | Agent decides, or `@ruleName` |
 | GitHub Copilot | Repository custom instructions | `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, or root `AGENTS.md` | Personal / organization instructions | Automatic when custom instructions are enabled |
 | Continue | Local Rule | `.continue/rules/l4d2-manager.md` | Hub Rules | Automatic in Agent, Chat, and Edit modes |
@@ -29,7 +31,7 @@ Do not copy real RCON passwords, GSLT values, Steam tokens, SSH private keys, pr
 
 ## Codex / OpenAI Skills
 
-Codex and OpenAI Skills use the Agent Skills structure: a directory containing `SKILL.md` plus optional resources.
+Codex and OpenAI Skills use the Agent Skills structure: each skill is a directory containing `SKILL.md` plus optional resources. This repository's router and six focused skills must be installed together.
 
 Install locally from a cloned repository.
 
@@ -37,14 +39,14 @@ PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
-Copy-Item -Recurse -Force .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+Copy-Item -Recurse -Force .\skills\* "$env:USERPROFILE\.codex\skills"
 ```
 
 macOS / Linux:
 
 ```bash
 mkdir -p ~/.codex/skills
-cp -R skills/l4d2-manager ~/.codex/skills/l4d2-manager
+cp -R skills/* ~/.codex/skills/
 ```
 
 Restart Codex after installation. Then ask:
@@ -53,10 +55,13 @@ Restart Codex after installation. Then ask:
 $l4d2-manager check both L4D2 rooms
 ```
 
-If the skill is hosted on GitHub, Codex users can also ask the built-in skill installer to install the GitHub directory URL:
+If installing from GitHub rather than a clone, install every skill directory under `skills/`; installing only the router leaves its focused workflows unavailable. For example, install the router and repeat for each sibling directory:
 
 ```text
 $skill-installer install https://github.com/Wizard23333/L4D2-Server-Manager-Skill/tree/main/skills/l4d2-manager
+$skill-installer install https://github.com/Wizard23333/L4D2-Server-Manager-Skill/tree/main/skills/l4d2-server-setup
+# Repeat for l4d2-map-manager, l4d2-plugin-manager, l4d2-troubleshooting,
+# l4d2-web-panel, and l4d2-backup-migrate.
 ```
 
 ---
@@ -69,17 +74,17 @@ Project skill:
 
 ```bash
 mkdir -p .claude/skills
-cp -R skills/l4d2-manager .claude/skills/l4d2-manager
+cp -R skills/* .claude/skills/
 ```
 
 Personal skill:
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -R skills/l4d2-manager ~/.claude/skills/l4d2-manager
+cp -R skills/* ~/.claude/skills/
 ```
 
-Claude Code discovers skills by their `name` and `description` fields. Keep the folder name and frontmatter name as `l4d2-manager`.
+Claude Code discovers skills by their `name` and `description` fields. Keep every folder name aligned with its frontmatter name.
 
 Optional fallback for older or constrained environments: create `CLAUDE.md` in the project root and point Claude to the canonical skill:
 
@@ -100,14 +105,14 @@ Workspace skill:
 
 ```bash
 mkdir -p .windsurf/skills
-cp -R skills/l4d2-manager .windsurf/skills/l4d2-manager
+cp -R skills/* .windsurf/skills/
 ```
 
 Global skill:
 
 ```bash
 mkdir -p ~/.codeium/windsurf/skills
-cp -R skills/l4d2-manager ~/.codeium/windsurf/skills/l4d2-manager
+cp -R skills/* ~/.codeium/windsurf/skills/
 ```
 
 Invoke it by describing an L4D2 server task, or mention it explicitly:
@@ -132,14 +137,14 @@ Project skill:
 
 ```bash
 mkdir -p .cline/skills
-cp -R skills/l4d2-manager .cline/skills/l4d2-manager
+cp -R skills/* .cline/skills/
 ```
 
 Global skill:
 
 ```bash
 mkdir -p ~/.cline/skills
-cp -R skills/l4d2-manager ~/.cline/skills/l4d2-manager
+cp -R skills/* ~/.cline/skills/
 ```
 
 For rule-only setups, create `.clinerules/l4d2-manager.md`:

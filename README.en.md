@@ -12,7 +12,7 @@ For server owners, this repository can work as an AI agent skill, a human-readab
 
 This repository provides a server management skill / playbook and an operational reference for L4D2 server owners. It turns server health checks, map installation, RCON map switching, multi-room management, log triage, and secret redaction into a reusable workflow.
 
-The repository includes [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), which can be installed or referenced directly, but the workflow itself is not tied to a single tool. You can use it as project context for Codex, Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent. It is equally useful as a human-readable runbook for manual SSH operations.
+The repository includes an installable Agent Skills suite. [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) is the entry-point router, while six sibling skills contain the focused procedures. The workflow is not tied to a single tool: it can be used as project context for Codex, Cursor, Trae, Windsurf, Claude Code, GitHub Copilot Chat, or another AI IDE/agent, and as a human-readable runbook for manual SSH operations.
 
 The repository also includes an optional Web management panel deployment package for people who prefer browser-based room, third-party map, VPK, and default-map management. It is an add-on, not a requirement for using the skill plus SSH/RCON workflow.
 
@@ -34,19 +34,20 @@ Not intended for:
 
 ### Use as a Codex Skill
 
-Copy the skill directory into the Codex user skills directory:
+Copy the complete skill suite into the Codex user skills directory; do not install only the `l4d2-manager` router:
 
 ```powershell
-Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
+Copy-Item -Recurse -Force .\skills\* "$env:USERPROFILE\.codex\skills"
 ```
 
 Restart Codex after installation so the skill can be loaded. You can then invoke it with `$l4d2-manager`, or simply describe an L4D2 server management task in the conversation.
 
 ### Use With Other AI IDEs or Agents
 
-If your tool supports project rules, context files, or custom instructions, include these files as context:
+If your tool supports project rules, context files, or custom instructions, include:
 
-- `skills/l4d2-manager/SKILL.md`
+- The complete `skills/` directory. Read `skills/l4d2-manager/SKILL.md` first, then load the focused skill it routes to.
 - `README.md`
 
 A good task framing is: "Follow this repository's L4D2 server management playbook." Ask the tool to confirm the target room, target map, restart impact, and any sensitive output before executing remote commands.
@@ -55,13 +56,14 @@ See [AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md) for quick setup instructions f
 
 ### Compatibility With Trae and Similar Tools
 
-The repository maintains a single canonical skill file: `skills/l4d2-manager/SKILL.md`. If a tool requires a fixed path such as `.trae/skills/...`, copy the canonical skill locally:
+The repository maintains one canonical router-plus-subskills suite. If a tool requires a fixed path such as `.trae/skills/...`, copy the complete suite locally:
 
 ```powershell
-Copy-Item -Recurse .\skills\l4d2-manager .\.trae\skills\l4d2-manager
+New-Item -ItemType Directory -Force .\.trae\skills | Out-Null
+Copy-Item -Recurse -Force .\skills\* .\.trae\skills\
 ```
 
-This avoids tracking two identical `SKILL.md` files in the repository and reduces the risk of future drift.
+This avoids tracking a duplicate skill suite in the repository and reduces the risk of future drift.
 
 ### Recommended Setup
 
@@ -137,6 +139,7 @@ For browser-based day-to-day operations, deploy the lightweight package under `d
 - **Network access**: The panel listens on `8080/tcp` by default, so both the local firewall such as `ufw` and the cloud security group must allow that port.
 - **Authentication**: The browser uses an in-page login form with a session cookie; Basic Authorization is still accepted for scripts. Credentials live on the server in `/etc/l4d2-manager-web.env`; never write the real password into documentation, issues, commit messages, or chat logs.
 - **Security boundary**: Root-level operations go only through `/usr/local/bin/l4d2-webctl` and a sudoers whitelist. GameMaps installs accept only numeric details ids; the panel does not expose arbitrary URL downloads or shell execution.
+- **Download proxy**: Downloads are direct by default. An HTTP/HTTPS proxy is used only when `/etc/l4d2-manager-web.env` explicitly sets a non-empty `L4D2_DOWNLOAD_PROXY`.
 
 ## Current Status and TODO
 
@@ -182,7 +185,7 @@ Clean these locations regularly to avoid filling the server disk:
 
 ## Detailed Documentation
 
-See [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) for the full operational guide, command references, multi-room configuration, installed map list, and current server health-check workflow. See [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md) for AI IDE setup notes. [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) is kept only as a compatibility entry point for older links.
+Start with [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md), then follow its routing table to the relevant focused skill. See [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md) for AI IDE setup notes. [L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) is kept only as a compatibility entry point for older links.
 
 ---
 

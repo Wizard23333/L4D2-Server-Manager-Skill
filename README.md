@@ -12,7 +12,7 @@
 
 这是一个面向 L4D2 服主的服务器管理 Skill / Playbook 与运维参考仓库。它把服务器检查、地图安装、RCON 切图、多房间管理、日志排障和敏感信息脱敏流程整理成一份可复用的操作手册。
 
-仓库内提供了可直接安装或引用的 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)，但核心内容并不绑定某一个工具。你也可以把这份文档作为 Codex、Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
+仓库内提供了一套可直接安装或引用的 Agent Skills：[skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) 是总入口，具体操作拆分在同级的 6 个聚焦子 Skill 中。核心内容不绑定某一个工具，也可以作为 Codex、Cursor、Trae、Windsurf、Claude Code、GitHub Copilot Chat 等 AI IDE/Agent 的项目上下文，或者直接作为人工运维手册使用。
 
 仓库同时包含一个可选的 Web 管理面板部署包，适合想用浏览器完成日常房间、三方地图、VPK 和默认地图管理的人；不需要 Web 面板时，仍可继续只使用 skill + SSH/RCON 流程。
 
@@ -32,19 +32,20 @@
 
 ### 作为 Codex Skill 使用
 
-将仓库中的 skill 目录复制到 Codex 用户 skill 目录：
+将仓库中的整套 Skill 目录复制到 Codex 用户 Skill 目录；不要只复制路由器 `l4d2-manager`：
 
 ```powershell
-Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-manager"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
+Copy-Item -Recurse -Force .\skills\* "$env:USERPROFILE\.codex\skills"
 ```
 
 安装后重启 Codex，让新 skill 被加载。后续可以在对话中使用 `$l4d2-manager`，或直接描述 L4D2 服务器管理任务。
 
 ### 在其他 AI IDE 或 Agent 中使用
 
-如果你的工具支持项目规则、上下文文档或自定义 instructions，可以把以下文件加入上下文：
+如果你的工具支持项目规则、上下文文档或自定义 instructions，可以把以下内容加入上下文：
 
-- `skills/l4d2-manager/SKILL.md`
+- `skills/` 整个目录；先读 `skills/l4d2-manager/SKILL.md`，再按其导航读取对应子 Skill。
 - `README.md`
 
 推荐把任务描述写成“请按本仓库的 L4D2 server management playbook 执行”，并要求工具在执行前先确认目标房间、目标地图、是否涉及重启、是否涉及敏感信息输出。
@@ -53,13 +54,14 @@ Copy-Item -Recurse .\skills\l4d2-manager "$env:USERPROFILE\.codex\skills\l4d2-ma
 
 ### Trae 等工具的兼容使用
 
-仓库只维护一份 canonical skill 文件：`skills/l4d2-manager/SKILL.md`。如果某个工具需要 `.trae/skills/...` 这样的固定目录，可以在本地复制一份：
+仓库维护一套路由器加子 Skill 的 canonical Skill 集合。如果某个工具需要 `.trae/skills/...` 这样的固定目录，可以在本地复制完整集合：
 
 ```powershell
-Copy-Item -Recurse .\skills\l4d2-manager .\.trae\skills\l4d2-manager
+New-Item -ItemType Directory -Force .\.trae\skills | Out-Null
+Copy-Item -Recurse -Force .\skills\* .\.trae\skills\
 ```
 
-这样可以避免仓库中长期维护两份内容相同的 `SKILL.md`，降低后续更新时两边漂移的风险。
+这样可以避免仓库中长期维护两套内容相同的 Skill，降低后续更新时两边漂移的风险。
 
 ### 推荐准备
 
@@ -129,6 +131,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **访问条件**：面板默认监听 `8080/tcp`，需要服务器本机 `ufw` 和云安全组都放行。
 - **登录配置**：浏览器使用页面内登录表单和 session cookie；脚本仍兼容 Basic Authorization。账号密码保存在服务器 `/etc/l4d2-manager-web.env`，不要把真实密码写入文档、Issue、提交说明或聊天记录。
 - **安全边界**：需要 root 权限的操作只通过 `/usr/local/bin/l4d2-webctl` 和 sudoers 白名单完成；GameMaps 只接受数字 details id，不提供任意 URL 或 shell 输入。
+- **下载代理**：默认直连；仅当 `/etc/l4d2-manager-web.env` 中显式配置非空 `L4D2_DOWNLOAD_PROXY` 时才使用 HTTP/HTTPS 代理。
 
 ## 📌 当前状态与待完成
 
@@ -163,7 +166,7 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 ---
 
 ## 📄 详细文档
-更多详细步骤和命令请参考 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md)。不同 AI IDE 的安装方式见 [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md)。[L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 仅保留为旧链接兼容入口。
+先从 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) 进入，再按导航阅读对应子 Skill。不同 AI IDE 的安装方式见 [docs/AI_IDE_INSTALL.md](./docs/AI_IDE_INSTALL.md)。[L4D2_MAP_SKILL.md](./L4D2_MAP_SKILL.md) 仅保留为旧链接兼容入口。
 
 ---
 
