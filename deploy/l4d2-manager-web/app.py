@@ -2073,10 +2073,11 @@ def search_catalog(query, kind):
     known_results = known_catalog_results(query, kind)
     if known_results and not WORKSHOP_ID_RE.match(query) and not STEAM_WEB_API_KEY:
         return {"ok": True, "query": query, "kind": kind, "results": known_results[:10]}
+    # Keep curated exact/alias matches ahead of best-effort online results so
+    # a full page of Workshop hits cannot hide a known GameMaps alternative.
+    results.extend(known_results)
     results.extend(workshop_search_results(query, kind))
     results.extend(gamemaps_search_results(query, kind))
-    if not WORKSHOP_ID_RE.match(query):
-        results.extend(known_results)
     deduped = []
     seen = set()
     for item in results:
