@@ -483,10 +483,14 @@ export default function App() {
     }, 5200);
   }
 
-  function setNotice(message: string) {
+  function setNotice(message: string, tone?: ToastTone) {
     setStatus(message);
     const text = (message || "").trim();
     if (!text) return;
+    if (tone) {
+      pushToast(text, tone);
+      return;
+    }
     if (PROBLEM_NOTICE.test(text)) {
       pushToast(text, "danger");
       return;
@@ -924,7 +928,7 @@ function RoomsPanel({ state, runAction }: { state: StateSnapshot; runAction: (ac
 function InstallPanel({ results, setResults, setNotice, loadState }: {
   results: CatalogItem[];
   setResults: (items: CatalogItem[]) => void;
-  setNotice: (message: string) => void;
+  setNotice: (message: string, tone?: ToastTone) => void;
   loadState: (message?: string) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
@@ -944,7 +948,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
     const response = await apiFetch(`/api/catalog/search?${new URLSearchParams({ query, kind })}`);
     const payload = await response.json();
     if (!response.ok) {
-      setNotice(payload.message || "Search failed");
+      setNotice(payload.message || "Search failed", "danger");
       return;
     }
     setResults(payload.results || []);
@@ -992,7 +996,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
     if (submitting) return;
     const trimmed = id.trim();
     if (!trimmed) {
-      setNotice("Enter a Workshop ID first.");
+      setNotice("Enter a Workshop ID first.", "warn");
       return;
     }
     setSubmitting("Resolving Steam download links...");
@@ -1002,7 +1006,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
       const payload = (await response.json()) as ProxyResolve & { message?: string };
       if (!response.ok || !payload.ok) {
         setProxyResolve(null);
-        setNotice(payload.message || "Failed to resolve download links");
+        setNotice(payload.message || "Failed to resolve download links", "danger");
         return;
       }
       setProxyResolve(payload);
@@ -1018,7 +1022,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
   async function installLocalFile(file: File | undefined, uploadKind: string) {
     if (submitting) return;
     if (!file) {
-      setNotice("Select a .vpk file first.");
+      setNotice("Select a .vpk file first.", "warn");
       return;
     }
     setSubmitting(`Uploading ${file.name}...`);
@@ -1029,10 +1033,10 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
       form.append("kind", uploadKind);
       const response = await apiFetch("/api/upload", { method: "POST", body: form });
       const payload = await response.json();
-      setNotice(payload.message || (response.ok ? "Uploaded" : "Upload failed"));
+      setNotice(payload.message || (response.ok ? "Uploaded" : "Upload failed"), response.ok ? "ok" : "danger");
       if (response.ok) await loadState("Refreshing...");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Upload failed");
+      setNotice(error instanceof Error ? error.message : "Upload failed", "danger");
     } finally {
       setSubmitting("");
     }
@@ -1042,7 +1046,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
     if (submitting) return;
     const trimmed = localId.trim();
     if (!trimmed) {
-      setNotice("Enter a Workshop ID first.");
+      setNotice("Enter a Workshop ID first.", "warn");
       return;
     }
     setSubmitting("Resolving Workshop parts...");
@@ -1055,7 +1059,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
       if (!response.ok || !payload.ok) {
         setLocalParts(null);
         setLocalFiles([]);
-        setNotice(payload.message || "Failed to resolve parts");
+        setNotice(payload.message || "Failed to resolve parts", "danger");
         return;
       }
       setLocalParts(payload);
@@ -1065,9 +1069,9 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
     } catch (error) {
       setLocalParts(null);
       if (error instanceof DOMException && error.name === "AbortError") {
-        setNotice("Resolve timed out — Steam may be unreachable from the server. Try 'Install ID' or 'Proxy download'.");
+        setNotice("Resolve timed out — Steam may be unreachable from the server. Try 'Install ID' or 'Proxy download'.", "danger");
       } else {
-        setNotice(error instanceof Error ? error.message : "Failed to resolve parts");
+        setNotice(error instanceof Error ? error.message : "Failed to resolve parts", "danger");
       }
     } finally {
       window.clearTimeout(timeout);
@@ -1099,11 +1103,11 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
   async function uploadWorkshopFiles() {
     if (submitting) return;
     if (!localParts) {
-      setNotice("Resolve the Workshop ID parts first.");
+      setNotice("Resolve the Workshop ID parts first.", "warn");
       return;
     }
     if (!localFiles.length) {
-      setNotice("Select one or more .vpk files first.");
+      setNotice("Select one or more .vpk files first.", "warn");
       return;
     }
     let done = 0;
@@ -1457,7 +1461,7 @@ function PackagesPanel(props: {
   setSelectedManifest: (value: Set<string>) => void;
   runAction: (action: () => Promise<string | undefined>, loading: string) => Promise<void>;
   loadState: (message?: string) => Promise<void>;
-  setNotice: (message: string) => void;
+  setNotice: (message: string, tone?: ToastTone) => void;
 }) {
   const packages = props.addons.filter((addon) => addon.kind === "map");
   const filtered = packages.filter((addon) => matchesPackageFilters(addon, props.filters));
@@ -1669,7 +1673,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
   selectedPackages: Set<string>;
   selectedManifest: Set<string>;
   loadState: (message?: string) => Promise<void>;
-  setNotice: (message: string) => void;
+  setNotice: (message: string, tone?: ToastTone) => void;
 }) {
   const manifestFile = useRef<HTMLInputElement>(null);
   const zipFile = useRef<HTMLInputElement>(null);
@@ -1678,7 +1682,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
 
   async function exportManifest() {
     if (!selectedManifest.size) {
-      setNotice("Select at least one manifest record.");
+      setNotice("Select at least one manifest record.", "warn");
       return;
     }
     setNotice("Preparing manifest...");
@@ -1687,7 +1691,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
     const response = await apiFetch("/api/manifest/export", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
     if (!response.ok) {
       const payload = await response.json();
-      setNotice(payload.message || "Manifest export failed");
+      setNotice(payload.message || "Manifest export failed", "danger");
       return;
     }
     downloadBlob(response, "l4d2-manager-manifest.json");
@@ -1696,7 +1700,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
 
   async function exportZip() {
     if (!selectedPackages.size) {
-      setNotice("Select at least one installed map package for ZIP export.");
+      setNotice("Select at least one installed map package for ZIP export.", "warn");
       return;
     }
     setNotice("Queueing ZIP export...");
@@ -1709,7 +1713,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
 
   async function upload(path: string, file: File | undefined, kind?: string) {
     if (!file) {
-      setNotice("Select a file first.");
+      setNotice("Select a file first.", "warn");
       return;
     }
     const form = new FormData();
@@ -1718,7 +1722,7 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
     setNotice("Uploading...");
     const response = await apiFetch(path, { method: "POST", body: form });
     const payload = await response.json();
-    setNotice(payload.message || (response.ok ? "Uploaded" : "Upload failed"));
+    setNotice(payload.message || (response.ok ? "Uploaded" : "Upload failed"), response.ok ? "ok" : "danger");
     if (response.ok) await loadState("Refreshing...");
   }
 
