@@ -9,17 +9,32 @@ description: 'L4D2 专用服务器管理的总入口与导航。当用户给出�
 
 ## 当前服务器快照
 
-> 更新时间：2026-06-18。记录运行形态和排障入口，不记录真实 RCON 密码、GSLT、Steam token 等敏感信息。
+> 更新时间：2026-10-10，由 `myubuntu2` 只读核验得出。记录运行形态和排障入口，不记录真实 RCON 密码、GSLT、Steam token 等敏感信息。
+
+**当前生产机：`myubuntu2`（主机名 `l4d2-server`，Ubuntu 20.04 LTS）。**
+旧机别名 `myubuntu`（121.5.28.16）**已不可达**（SSH 22 端口连接被远端关闭），仅作历史记录保留，不要再对它执行命令。
 
 | 房间 | 服务 | 端口 | 配置文件 | 默认地图 | 可见性 |
 | --- | --- | --- | --- | --- | --- |
-| Room 1 | `l4d2.service` | `27015/udp` | `server.cfg` | `hls_05` | Steam 组内/私密 |
-| Room 2 | `l4d2_2.service` | `27016/udp` | `server_2.cfg` | `zc_m1` | 公开可搜 |
+| Room 1 | `l4d2.service` | `27015/udp` | `server.cfg` | `l4d2_bts01_forest` | Steam 组内专属（`sv_steamgroup_exclusive 1`） |
+| Room 2 | `l4d2_2.service` | `27016/udp` | `server_2.cfg` | `glubtastic5_1` | 公开可搜（`sv_steamgroup_exclusive 0`） |
 
+- 两房间同属 Steam 组 `46097240`；`sv_lan 0`、`sv_region 4`；均未设 `sv_password`。
 - 安装目录：`/opt/l4d2`，由非 root 用户 `steam` 运行；两房间共享 `/opt/l4d2/left4dead2/`。
-- 本地 SSH 别名 `myubuntu`，大量命令形如 `ssh myubuntu "sudo systemctl status l4d2"`。
-- 当前主要 VPK：地图 `gzzc7.3.vpk`、`tianti.vpk`；插件 `left4bots2.vpk`、`left4lib.vpk`、`admin_system.vpk`。
-- 当前启用的 SourceMod 业务插件：`left4dhooks.smx`（受保护）、`l4d_infected_hp.smx`、`infected_counter.smx`（自写）、`showdamage.smx`、`l4d2_sb_fix.smx`。
+- 本地 SSH 别名 `myubuntu2`，大量命令形如 `ssh myubuntu2 "sudo systemctl status l4d2"`。
+- 启动参数均含 `+sv_hibernate_when_empty 0`（保证 RCON 可用）。
+- **插件栈形态已变更**：新机不再安装 Left 4 Bots 2（`addons/` 下无 `left4bots2.vpk` / `left4lib.vpk` / `admin_system.vpk`，`ems/` 下无 `left4bots`），改为纯 MetaMod:Source + SourceMod + Left4DHooks 方案。
+- 启用的业务 `.smx`：`left4dhooks.smx`、`l4d_infected_hp.smx`、`infected_counter.smx`（自写）、`jiangmen_changelevel_fix.smx`（自写）、`showdamage.smx`、`l4d2_sb_fix.smx`；其余为 SourceMod 自带 base/admin 系列。
+- 禁用的 `.smx`（禁用态本身是状态，备份/迁移必须一起带走）：`advertisements`、`mapchooser`、`nextmap`、`randomcycle`、`rockthevote`、`nominations`、`l4d_kill`、`sql-admin-manager`、`admin-sql-prefetch`、`admin-sql-threaded`。
+- 地图：`maps/` 下 65 个 `.bsp`；`addons/` 下 12 个 VPK，主要为 Back To School 系列、`Glubtastic 5`、`Ladder to Heaven 3` 及 3 个 mod VPK；`addons_disabled/` 为空。
+- Web 面板已部署：`l4d2-manager-web.service` enabled/active，监听 `8080/tcp`，`Server: L4D2Manager/0.3`；状态目录 `/var/lib/l4d2-manager-web/`（`jobs/`、`packages.json`、`uploads/`、`exports/`）。
+- 网络加速：`/etc/hosts` 含 `L4D2-STEAM-CDN` 标记块，`/etc/gai.conf` 已加 `precedence ::ffff:0:0/96 100` 强制 IPv4。
+- 防火墙：`ufw` 已放行 `22/tcp`、`27015/udp`、`27016/udp`、`8080/tcp`（含 IPv6 对应规则）。
+
+### 当前已知风险
+
+- **磁盘偏紧**：`/` 40G 已用 32G，仅剩 6.4G（84%）。安装新地图或备份前先查 `df -h /` 与 `addons/`、`maps/` 占用。
+- **下载代理可能已断**：面板 env 仍配置 `L4D2_DOWNLOAD_PROXY=http://127.0.0.1:7890`，但 `mihomo` 服务当前 **inactive**。走代理的搜索/下载会失败，改用服务器直连前先确认。
 
 ## 子 skill 导航
 
@@ -43,10 +58,10 @@ description: 'L4D2 专用服务器管理的总入口与导航。当用户给出�
 
 ## 常用管理指令快速参考
 
-- **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"`（Room 1）或 `l4d2_2`（Room 2）
-- **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
-- **查看实时日志**：`ssh myubuntu "sudo journalctl -u l4d2.service -f"`
-- **查看端口监听**：`ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"` 或 `27016`
-- **查看最近错误**：`ssh myubuntu "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|keyvalues' | tail -80"`
+- **查看服务状态**：`ssh myubuntu2 "sudo systemctl status l4d2"`（Room 1）或 `l4d2_2`（Room 2）
+- **重启服务**：`ssh myubuntu2 "sudo systemctl restart l4d2"`
+- **查看实时日志**：`ssh myubuntu2 "sudo journalctl -u l4d2.service -f"`
+- **查看端口监听**：`ssh myubuntu2 "sudo ss -H -lunp 'sport = :27015'"` 或 `27016`
+- **查看最近错误**：`ssh myubuntu2 "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|keyvalues' | tail -80"`
 
 更深入的健康检查与排障见 `l4d2-troubleshooting`；地图/插件/搭建的完整流程见对应子 skill。

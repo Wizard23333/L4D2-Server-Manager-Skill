@@ -6,3 +6,12 @@ deploy/l4d2-manager-web/frontend/dist/
 
 # Accidental duplicate directory with a leading space; keep the real .trae/ tracked.
  .trae/
+
+# Agent 工作区记忆，属本地会话产物，不入库
+.workbuddy/
+
+# 仓库根目录散落的下载/测试用 VPK（Workshop ID 即文件名），避免误提交大文件
+/*.vpk
+
+# spec 目录下的一次性临时脚本（如 provisioning 时的 _tmp_get_mihomo.sh）
+.trae/specs/**/_tmp_*.sh

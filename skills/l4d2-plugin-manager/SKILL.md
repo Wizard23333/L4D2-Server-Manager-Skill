@@ -11,16 +11,19 @@ description: "L4D2 服务器插件与 Mod 管理。当需要安装 VPK 插件（
 
 ## 当前启用的 SourceMod 业务插件快照
 
-> 更新时间：2026-06-18。
+> 更新时间：2026-10-10，由 `myubuntu2` 只读核验。
 
 - `left4dhooks.smx`：核心 hooks/gamedata 依赖库（**受保护，不可从面板禁用**）。
 - `l4d_infected_hp.smx`：Tank / Witch / 特感血量显示。
 - `infected_counter.smx`：自写插件，聊天区周期播报「特感: X 普感: Y」。
+- `jiangmen_changelevel_fix.smx`：自写插件，江门新会切图修复。
 - `showdamage.smx`：显示自己造成的伤害数值（聊天区）。
 - `l4d2_sb_fix.smx`：求生 Bot 行为增强 / 修复。
-- 已禁用（移入 `plugins/disabled/`）：`advertisements.smx`（含他人信息）、`l4d_kill.smx`（实为 `!zs` 自杀命令，无计数功能）、`mapchooser.smx` / `nextmap.smx` / `rockthevote.smx` / `nominations.smx`（L4D2 投票链不兼容）。
+- 其余启用项为 SourceMod 自带 base/admin 系列（`basecommands`、`adminmenu`、`funcommands`、`playercommands` 等）。
 
-当前已安装的插件类 VPK：`left4bots2.vpk`、`left4lib.vpk`、`admin_system.vpk`。
+**禁用态**（`plugins/disabled/`，禁用态本身是状态，备份/迁移必须一起带走）：`advertisements.smx`（含他人信息）、`l4d_kill.smx`（实为 `!zs` 自杀命令）、`mapchooser.smx` / `nextmap.smx` / `rockthevote.smx` / `nominations.smx` / `randomcycle.smx`（L4D2 投票链不兼容）、`sql-admin-manager.smx` / `admin-sql-prefetch.smx` / `admin-sql-threaded.smx`（改用 flatfile）。
+
+**插件类 VPK**：当前机器**未安装** Left 4 Bots 2 —— `addons/` 下无 `left4bots2.vpk` / `left4lib.vpk` / `admin_system.vpk`，`ems/` 下无 `left4bots`（仅剩 `ems/lxc`）。下方 L4B2 安装章节属于可选增强，装之前先评估与现有 SourceMod 栈的冲突。
 
 ---
 
@@ -38,7 +41,7 @@ description: "L4D2 服务器插件与 Mod 管理。当需要安装 VPK 插件（
 
 1.  **获取直链**：
     ```bash
-    ssh myubuntu "curl -s -d 'itemcount=1&publishedfileids[0]=<Mod_ID>' -X POST https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+    ssh myubuntu2 "curl -s -d 'itemcount=1&publishedfileids[0]=<Mod_ID>' -X POST https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
     ```
 2.  **下载并部署**：
     ```bash
@@ -94,19 +97,19 @@ description: "L4D2 服务器插件与 Mod 管理。当需要安装 VPK 插件（
 部署流程：
 ```bash
 # 1. 本地写好 .sp 源码后传到服务器临时目录
-scp deploy/l4d2-manager-web/plugins/infected_counter.sp myubuntu:/tmp/
+scp deploy/l4d2-manager-web/plugins/infected_counter.sp myubuntu2:/tmp/
 
 # 2. 备份当前插件栈（PowerShell 侧先生成时间戳，避免 $(date) 被本地解析）
 #    $ts = Get-Date -Format "yyyyMMddHHmmss"
-ssh myubuntu "sudo tar -czf /opt/l4d2/left4dead2/addons/sm_plugins_backup_<时间戳>.tar.gz -C /opt/l4d2/left4dead2/addons sourcemod/plugins sourcemod/configs"
+ssh myubuntu2 "sudo tar -czf /opt/l4d2/left4dead2/addons/sm_plugins_backup_<时间戳>.tar.gz -C /opt/l4d2/left4dead2/addons sourcemod/plugins sourcemod/configs"
 
 # 3. 用 spcomp64 编译（关键：spcomp 是 32-bit 且原文件常无执行位，必须用 spcomp64 并 chmod +x）
-ssh myubuntu "sudo chmod +x /opt/l4d2/left4dead2/addons/sourcemod/scripting/spcomp64"
-ssh myubuntu "cd /opt/l4d2/left4dead2/addons/sourcemod/scripting && sudo -u steam ./spcomp64 /tmp/infected_counter.sp -o /tmp/infected_counter.smx"
+ssh myubuntu2 "sudo chmod +x /opt/l4d2/left4dead2/addons/sourcemod/scripting/spcomp64"
+ssh myubuntu2 "cd /opt/l4d2/left4dead2/addons/sourcemod/scripting && sudo -u steam ./spcomp64 /tmp/infected_counter.sp -o /tmp/infected_counter.smx"
 
 # 4. 部署（带时间戳备份旧产物）+ 归属 steam + 重启两房间
-ssh myubuntu "sudo cp /opt/l4d2/left4dead2/addons/sourcemod/plugins/infected_counter.smx /tmp/infected_counter.smx.bak-<时间戳> 2>/dev/null; sudo cp /tmp/infected_counter.smx /opt/l4d2/left4dead2/addons/sourcemod/plugins/ && sudo chown steam:steam /opt/l4d2/left4dead2/addons/sourcemod/plugins/infected_counter.smx"
-ssh myubuntu "sudo /usr/local/bin/l4d2-webctl restart-room all"
+ssh myubuntu2 "sudo cp /opt/l4d2/left4dead2/addons/sourcemod/plugins/infected_counter.smx /tmp/infected_counter.smx.bak-<时间戳> 2>/dev/null; sudo cp /tmp/infected_counter.smx /opt/l4d2/left4dead2/addons/sourcemod/plugins/ && sudo chown steam:steam /opt/l4d2/left4dead2/addons/sourcemod/plugins/infected_counter.smx"
+ssh myubuntu2 "sudo /usr/local/bin/l4d2-webctl restart-room all"
 ```
 
 > 注意：仓库 helper `l4d2-webctl` 内的 `compile_source_plugin()` 仍调用 `spcomp`；服务器实际可用的是 `spcomp64`。手动编译时务必用 `spcomp64`。
@@ -137,12 +140,12 @@ ssh myubuntu "sudo /usr/local/bin/l4d2-webctl restart-room all"
 
 安装/改动后先做只读验证：
 ```bash
-ssh myubuntu "sudo systemctl status l4d2 l4d2_2 --no-pager"
-ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"
-ssh myubuntu "sudo ss -H -lunp 'sport = :27016'"
-ssh myubuntu "sudo find /opt/l4d2/left4dead2/addons/sourcemod/plugins -maxdepth 2 -type f -name '*.smx' | sort"
+ssh myubuntu2 "sudo systemctl status l4d2 l4d2_2 --no-pager"
+ssh myubuntu2 "sudo ss -H -lunp 'sport = :27015'"
+ssh myubuntu2 "sudo ss -H -lunp 'sport = :27016'"
+ssh myubuntu2 "sudo find /opt/l4d2/left4dead2/addons/sourcemod/plugins -maxdepth 2 -type f -name '*.smx' | sort"
 # 重启后确认 SM 错误日志无新增 session（无 RCON，以日志为准）
-ssh myubuntu "sudo ls -t /opt/l4d2/left4dead2/addons/sourcemod/logs/errors_*.log | head -1"
+ssh myubuntu2 "sudo ls -t /opt/l4d2/left4dead2/addons/sourcemod/logs/errors_*.log | head -1"
 ```
 
 游戏内或服务器控制台验证：

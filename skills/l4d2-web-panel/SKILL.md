@@ -43,11 +43,11 @@ Web 管理面板是部署在服务器上的轻量浏览器界面，适合日常�
 
 ```bash
 # 本地仓库中执行，将部署包同步到服务器临时目录
-ssh myubuntu "mkdir -p /tmp/l4d2-manager-web"
-scp deploy/l4d2-manager-web/* myubuntu:/tmp/l4d2-manager-web/
+ssh myubuntu2 "mkdir -p /tmp/l4d2-manager-web"
+scp deploy/l4d2-manager-web/* myubuntu2:/tmp/l4d2-manager-web/
 
 # 服务器上安装/更新 Web 面板
-ssh myubuntu "cd /tmp/l4d2-manager-web && sudo bash install.sh"
+ssh myubuntu2 "cd /tmp/l4d2-manager-web && sudo bash install.sh"
 ```
 
 安装脚本会：

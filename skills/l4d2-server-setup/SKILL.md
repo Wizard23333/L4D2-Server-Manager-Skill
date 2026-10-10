@@ -9,15 +9,16 @@ description: "L4D2 专用服务器的接入与运行基础。当需要从零接�
 
 ## 当前服务器快照
 
-> 更新时间：2026-06-18。记录运行形态，不记录真实 RCON 密码、GSLT、Steam token 等敏感信息。
+> 更新时间：2026-10-10，由当前生产机 `myubuntu2`（主机名 `l4d2-server`）只读核验。记录运行形态，不记录真实 RCON 密码、GSLT、Steam token 等敏感信息。
 
 | 房间 | 服务 | 端口 | 配置文件 | 默认地图 | 可见性 |
 | --- | --- | --- | --- | --- | --- |
-| Room 1 | `l4d2.service` | `27015/udp` | `server.cfg` | `hls_05` | Steam 组内/私密 |
-| Room 2 | `l4d2_2.service` | `27016/udp` | `server_2.cfg` | `zc_m1` | 公开可搜 |
+| Room 1 | `l4d2.service` | `27015/udp` | `server.cfg` | `l4d2_bts01_forest` | Steam 组内专属（`sv_steamgroup_exclusive 1`） |
+| Room 2 | `l4d2_2.service` | `27016/udp` | `server_2.cfg` | `glubtastic5_1` | 公开可搜（`sv_steamgroup_exclusive 0`） |
 
+- 两房间同属 Steam 组 `46097240`；`sv_lan 0`、`sv_region 4`；均未设 `sv_password`。
 - 安装目录：`/opt/l4d2`，所有服务由非 root 用户 `steam` 运行。
-- 本地 SSH 别名：`myubuntu`（后文命令大量使用）。
+- 本地 SSH 别名：`myubuntu2`（后文命令大量使用）。
 
 ## 安全与敏感信息规范（始终遵守）
 
@@ -107,10 +108,10 @@ ssh YOUR_SSH_USER@YOUR_SERVER_IP
 只有在这一步验证成功之后，才建议继续收紧 SSH 策略。
 
 ### E. 在本地配置 SSH 别名
-为了和本文档后续命令保持一致，建议你在本地 `~/.ssh/config` 中提前配置一个固定别名，例如 `myubuntu`：
+为了和本文档后续命令保持一致，建议你在本地 `~/.ssh/config` 中提前配置一个固定别名，例如 `myubuntu2`：
 
 ```sshconfig
-Host myubuntu
+Host myubuntu2
     HostName YOUR_SERVER_IP
     User YOUR_SSH_USER
     IdentityFile ~/.ssh/id_ed25519
@@ -119,10 +120,10 @@ Host myubuntu
 完成后测试：
 
 ```bash
-ssh myubuntu "whoami"
+ssh myubuntu2 "whoami"
 ```
 
-后文大量命令都默认使用这种形式，例如 `ssh myubuntu "sudo systemctl status l4d2"`。
+后文大量命令都默认使用这种形式，例如 `ssh myubuntu2 "sudo systemctl status l4d2"`。
 
 ### F. 加固 SSH 登录策略
 在确认“公钥登录 + sudo 用户 + 本地 SSH 别名”都正常后，再考虑收紧 SSH 登录策略，例如：
@@ -176,7 +177,7 @@ sudo apt update && sudo apt upgrade -y
 
 ### I. 做一轮接入验证
 在开始后续步骤之前，建议你至少完成下面这轮人工验证：
-1. 从本地用 `ssh myubuntu` 重新连接一次，确认不是靠旧会话“假在线”。
+1. 从本地用 `ssh myubuntu2` 重新连接一次，确认不是靠旧会话“假在线”。
 2. 执行 `sudo -v`，确认管理用户有提权能力。
 3. 执行 `sudo ufw status`，确认当前放行规则符合你的预期。
 4. 在云控制台再次检查安全组，确认 `22/tcp` 和需要的游戏端口已放行。
@@ -230,30 +231,30 @@ sudo apt update && sudo apt upgrade -y
 为了方便管理，在本地配置了 SSH 别名，无需记忆复杂的 IP 地址。
 
 ### A. SSH 别名配置 (本地)
-在本地终端执行命令时，使用 `myubuntu` 即可连接服务器：
-- **别名**：`myubuntu`
+在本地终端执行命令时，使用 `myubuntu2` 即可连接服务器：
+- **别名**：`myubuntu2`
 - **配置文件**：`~/.ssh/config` (本地)
 - **使用示例**：
   ```bash
-  ssh myubuntu "sudo systemctl status l4d2"
+  ssh myubuntu2 "sudo systemctl status l4d2"
   ```
 
 ### B. 远程执行命令常用模式
 - **查看实时日志**：
   ```bash
-  ssh myubuntu "sudo journalctl -u l4d2.service -f"
+  ssh myubuntu2 "sudo journalctl -u l4d2.service -f"
   ```
 - **重启游戏服务**：
   ```bash
-  ssh myubuntu "sudo systemctl restart l4d2"
+  ssh myubuntu2 "sudo systemctl restart l4d2"
   ```
 
 ### C. 常用管理指令汇总
-- **查看服务状态**：`ssh myubuntu "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
-- **重启服务**：`ssh myubuntu "sudo systemctl restart l4d2"`
-- **查看实时日志**：`ssh myubuntu "sudo journalctl -u l4d2.service -f"`
-- **查看端口监听**：`ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"` 或 `27016`
-- **查看最近错误**：`ssh myubuntu "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|keyvalues' | tail -80"`
+- **查看服务状态**：`ssh myubuntu2 "sudo systemctl status l4d2"` (Room 1) 或 `l4d2_2` (Room 2)
+- **重启服务**：`ssh myubuntu2 "sudo systemctl restart l4d2"`
+- **查看实时日志**：`ssh myubuntu2 "sudo journalctl -u l4d2.service -f"`
+- **查看端口监听**：`ssh myubuntu2 "sudo ss -H -lunp 'sport = :27015'"` 或 `27016`
+- **查看最近错误**：`ssh myubuntu2 "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|keyvalues' | tail -80"`
 
 ---
 
@@ -276,28 +277,28 @@ Room 1：
 - **服务**：`l4d2.service`
 - **端口**：`27015`
 - **配置文件**：`server.cfg`
-- **默认地图**：`hls_05`
+- **默认地图**：`l4d2_bts01_forest`（Back To School 第 1 章）
 - **启动脚本**：`/opt/l4d2/start_l4d2.sh`
 
 Room 2：
 - **服务**：`l4d2_2.service`
 - **端口**：`27016`
 - **配置文件**：`server_2.cfg`
-- **默认地图**：`zc_m1`
+- **默认地图**：`glubtastic5_1`
 - **启动脚本**：`/opt/l4d2/start_l4d2_2.sh`
 
 ### C. 管理指令
 - **启动/重启房间 2**：
   ```bash
-  ssh myubuntu "sudo systemctl restart l4d2_2"
+  ssh myubuntu2 "sudo systemctl restart l4d2_2"
   ```
 - **查看房间 2 状态**：
   ```bash
-  ssh myubuntu "sudo systemctl status l4d2_2"
+  ssh myubuntu2 "sudo systemctl status l4d2_2"
   ```
 - **查看房间 2 日志**：
   ```bash
-  ssh myubuntu "sudo journalctl -u l4d2_2.service -f"
+  ssh myubuntu2 "sudo journalctl -u l4d2_2.service -f"
   ```
 
 ### D. 房间曝光与可见性管理 (公开/私密切换)

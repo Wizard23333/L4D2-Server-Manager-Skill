@@ -39,12 +39,14 @@ description: "L4D2 服务器完整状态备份与跨机迁移。当服务器租�
 | A3 | systemd unit | `/etc/systemd/system/l4d2.service`、`l4d2_2.service` | 新机需 `daemon-reload` 后 enable |
 | A4 | SourceMod 插件栈 | `addons/sourcemod/plugins/`（启用）、`addons/sourcemod/plugins/disabled/`（禁用态）、`addons/sourcemod/configs/`、`cfg/sourcemod/` | **禁用态本身也是状态**，必须连 `disabled/` 一起迁移 |
 | A5 | 自写插件源码 | 仓库 `deploy/l4d2-manager-web/plugins/*.sp`（如 `infected_counter.sp`） | 随仓库走，新机用 `spcomp64` 重新编译，**不直接搬 `.smx` 二进制** |
-| A6 | 插件类 VPK（含禁用态） | `addons/left4bots2.vpk`、`left4lib.vpk`、`admin_system.vpk`，以及 `addons_disabled/` 下的禁用 VPK | 体积相对小，直接迁移；**禁用态目录 `addons_disabled/` 也要带走**（与 A4 同理，禁用态本身是状态）；同时记录 Workshop ID（`2279814689` / `2634208272` / `213591107`）作兜底 |
-| A7 | 管理员白名单 | `ems/left4bots/cfg/admins.txt`、`ems/admin system/admins.txt` | 含 SteamID，属敏感文件 |
+| A6 | 插件类 VPK（含禁用态） | `addons/left4bots2.vpk`、`left4lib.vpk`、`admin_system.vpk`，以及 `addons_disabled/` 下的禁用 VPK | **仅装有 L4B2 的机器才有**（当前 `myubuntu2` 无此项，直接跳过）；体积相对小，直接迁移；**禁用态目录 `addons_disabled/` 也要带走**（与 A4 同理，禁用态本身是状态）；同时记录 Workshop ID（`2279814689` / `2634208272` / `213591107`）作兜底 |
+| A7 | 管理员白名单 | `ems/left4bots/cfg/admins.txt`、`ems/admin system/admins.txt` | **同样只对装有 L4B2 的机器成立**；含 SteamID，属敏感文件。改用 flatfile 管理器的机器此路径不存在 |
 | A8 | 网络加速 | `/etc/hosts` 的 `L4D2-STEAM-CDN` 块、`/etc/gai.conf` 的 `precedence ::ffff:0:0/96 100` 行 | 国内访问 Steam 的关键，新机要重建 |
 | A9 | Web 面板状态（如启用） | `/etc/l4d2-manager-web.env`（敏感）、`/var/lib/l4d2-manager-web/packages.json` | env 含登录配置；`packages.json` 是地图来源/ID 记录，是 B 类重下的依据 |
 
-> 路径基于当前服务器快照（安装目录 `/opt/l4d2`，两房间共享 `/opt/l4d2/left4dead2/`，非 root 用户 `steam`）。实际迁移前先 `ssh myubuntu "ls <路径>"` 确认存在性，缺失项跳过即可。
+> 路径基于当前服务器快照（安装目录 `/opt/l4d2`，两房间共享 `/opt/l4d2/left4dead2/`，非 root 用户 `steam`）。实际迁移前先 `ssh myubuntu2 "ls <路径>"` 确认存在性，缺失项跳过即可。
+>
+> **本仓库所有 `cp` 都带 `|| true`，所以清单里的路径不必全部存在。** 判断某项是否适用，看当前机器实际形态：例如 `myubuntu2` 已卸载 Left 4 Bots 2（`ems/` 下只剩 `lxc`），A6 / A7 直接跳过；装了 L4B2 的老机器才需要照单全收。
 
 ### B 类 — 仅保留 ID，新机重新下载
 
@@ -120,7 +122,7 @@ tar -czf /tmp/l4d2-mig-$ts.tar.gz -C /tmp l4d2-mig-$ts
 echo PACKED:/tmp/l4d2-mig-$ts.tar.gz
 "@
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remote))
-ssh myubuntu "echo $b64 | base64 -d | bash"
+ssh myubuntu2 "echo $b64 | base64 -d | bash"
 ```
 
 > 说明：PowerShell here-string 中 `` `$ `` 表示传给远程的字面 `$`（远程 bash 变量），不带反引号的 `$ts` 在本地展开为时间戳。`admin system` 目录名含空格，必须整体加引号。所有 `cp` 都带 `|| true`，缺失文件不会中断。
@@ -129,7 +131,7 @@ ssh myubuntu "echo $b64 | base64 -d | bash"
 
 ```powershell
 # 仍在本地 PowerShell（用上一步打印的 PACKED 路径）
-scp myubuntu:/tmp/l4d2-mig-$ts.tar.gz .
+scp myubuntu2:/tmp/l4d2-mig-$ts.tar.gz .
 # 解压到本地备份目录后，A5 自写插件源码直接来自本仓库，无需从服务器取：
 #   deploy/l4d2-manager-web/plugins/*.sp 已随仓库版本管理
 ```

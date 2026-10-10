@@ -67,7 +67,7 @@ This avoids tracking a duplicate skill suite in the repository and reduces the r
 
 ### Recommended Setup
 
-- Configure an SSH alias such as `myubuntu` in local `~/.ssh/config`.
+- Configure an SSH alias such as `myubuntu2` in local `~/.ssh/config`.
 - Run the L4D2 dedicated server under a non-root user such as `steam`.
 - Keep real secrets only in server configuration files or private local environments.
 - Read the health-check and secret-redaction sections in [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) before using the workflow on a public server.
@@ -78,7 +78,7 @@ This avoids tracking a duplicate skill suite in the repository and reduces the r
 $l4d2-manager check the current status of both rooms
 $l4d2-manager inspect the last 24 hours of L4D2 errors and tell me whether players are affected
 $l4d2-manager help me install Workshop map 3526529688 on the server
-$l4d2-manager switch Room 2 to zc_m1 and tell me whether a restart is required
+$l4d2-manager switch Room 2 to glubtastic5_1 and tell me whether a restart is required
 $l4d2-manager inspect addons, maps, and workshop cache usage, then suggest cleanup steps
 ```
 
@@ -112,8 +112,13 @@ Before installing the game server, prepare the network path to Steam. This is es
 
 ## Current Server Layout
 
-- **Room 1**: `l4d2.service`, `27015/udp`, default map `hls_05`, intended for Steam group or private access.
-- **Room 2**: `l4d2_2.service`, `27016/udp`, default map `zc_m1`, public and searchable.
+> Updated 2026-10-10, verified read-only against the current production host `myubuntu2` (hostname `l4d2-server`).
+
+- **Room 1**: `l4d2.service`, `27015/udp`, default map `l4d2_bts01_forest`, Steam-group exclusive.
+- **Room 2**: `l4d2_2.service`, `27016/udp`, default map `glubtastic5_1`, public and searchable.
+- Both rooms belong to Steam group `46097240` and share `/opt/l4d2/left4dead2/`, running under the non-root `steam` user.
+- Plugin stack is MetaMod:Source + SourceMod + Left4DHooks (**no Left 4 Bots 2**).
+- The optional Web panel is deployed and enabled on `8080/tcp`.
 - **Health checks**: Service status, UDP listeners, and recent error-log filters are documented in the detailed skill guide.
 
 ## 3. Map Installation and Management
@@ -166,7 +171,7 @@ Clean these locations regularly to avoid filling the server disk:
 ## 6. Troubleshooting and SSH Tips
 
 - **KeyValues Error**: Check for UTF-8 BOM markers, malformed braces, or incompatible custom resources.
-- **SSH alias**: Configure an alias in local `~/.ssh/config` so repeated operations can use short commands such as `ssh myubuntu "sudo systemctl status l4d2"`.
+- **SSH alias**: Configure an alias in local `~/.ssh/config` so repeated operations can use short commands such as `ssh myubuntu2 "sudo systemctl status l4d2"`.
 
 ## 7. Local Backups and Recovery
 

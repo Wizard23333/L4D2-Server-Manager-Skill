@@ -18,22 +18,30 @@ description: "L4D2 服务器排障与常见问题。当需要做标准健康检�
 当需要判断服务器是否正常运行时，先查服务，再查端口，最后看日志：
 
 ```bash
-ssh myubuntu "sudo systemctl status l4d2 --no-pager"
-ssh myubuntu "sudo systemctl status l4d2_2 --no-pager"
-ssh myubuntu "sudo systemctl show l4d2 l4d2_2 -p NRestarts -p ExecMainStatus -p ExecMainStartTimestamp --no-pager"
-ssh myubuntu "sudo ss -H -lunp 'sport = :27015'"
-ssh myubuntu "sudo ss -H -lunp 'sport = :27016'"
+ssh myubuntu2 "sudo systemctl status l4d2 --no-pager"
+ssh myubuntu2 "sudo systemctl status l4d2_2 --no-pager"
+ssh myubuntu2 "sudo systemctl show l4d2 l4d2_2 -p NRestarts -p ExecMainStatus -p ExecMainStartTimestamp --no-pager"
+ssh myubuntu2 "sudo ss -H -lunp 'sport = :27015'"
+ssh myubuntu2 "sudo ss -H -lunp 'sport = :27016'"
 ```
 
 最近错误快速过滤：
 ```bash
-ssh myubuntu "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|denied|recursive|keyvalues|crash|segmentation' | tail -80"
+ssh myubuntu2 "sudo journalctl -u l4d2 -u l4d2_2 --since '24 hours ago' --no-pager | grep -Ei 'error|fail|warning|missing|denied|recursive|keyvalues|crash|segmentation' | tail -80"
 ```
 
 判断标准：
 - `Active: active (running)` 且 `NRestarts=0`：systemd 层面稳定。
 - `ss` 能看到 `srcds_linux` 监听 `27015/udp` 或 `27016/udp`：游戏端口已绑定。
 - 日志有自定义模型或脚本报错，但服务未重启：通常优先按地图/Mod 兼容性排查，不要直接判断为服务器崩溃。
+
+SourceMod 侧有一键只读检查脚本（输出最后一个 error session 之后的内容 + 启用/禁用插件清单）：
+
+```bash
+ssh myubuntu2 'bash -s' < scripts/verify-sourcemod-logs.sh
+```
+
+脚本只读，不修改任何服务器状态。禁用插件清单同样要记录 —— **禁用态本身也是状态**，备份和迁移时必须一起带走。
 
 ### B. 当前已知日志噪声和风险点
 

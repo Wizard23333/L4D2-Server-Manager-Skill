@@ -9,16 +9,19 @@ description: "L4D2 服务器地图管理。当需要安装创意工坊地图（S
 
 > 安全规范：展示 `start_l4d2*.sh`、`server*.cfg` 或 RCON 相关输出前，把 `rcon_password`、GSLT、Steam token 替换为 `YOUR_RCON_PASSWORD` 等占位符。切图/重启前确认目标房间与在线影响。
 
-## 当前已验证的常用自定义地图入口
+## 当前已安装的自定义战役（2026-10-10 核验）
 
-- `zc_m1` 至 `zc_m5`：广州增城。
-- `hls_05`：天梯 / Ladder to Heaven。
-- `dxyl1` 至 `dxyl4_f`：地心引力。
-- `l4d_yama_1` 至 `l4d_yama_5`：Yama。
-- `mtlgth001` 至 `mtlgth005`：MTL Gone To Hell。
-- `q_ancienttown`、`q_ancienttown2`、`q_fleshbridge1`、`q_fleshbridge2`、`q_fleshbridgesurvive`：HOME TOWN 相关关卡。
+当前机器 `addons/` 下 12 个 VPK、`maps/` 下 65 个 `.bsp`，自定义战役共 3 套：
 
-当前已安装的主要地图 VPK：`gzzc7.3.vpk`（广州增城）、`tianti.vpk`（天梯）。
+- **Back To School（返校）** 6 章：`l4d2_bts01_forest`、`l4d2_bts02_station`、`l4d2_bts03_town`、`l4d2_bts04_cinema`、`l4d2_bts05_church`、`l4d2_bts06_school`。**Room 1 默认图即 `l4d2_bts01_forest`。**
+- **Glubtastic 5** 6 章 +  extras：`glubtastic5_1` ~ `glubtastic5_6`、`glubtastic5_bigtesco`。**Room 2 默认图即 `glubtastic5_1`。**
+- **Ladder to Heaven 3（天梯 3）**：`hls_15` ~ `hls_20`。
+
+另有 3 个装饰 mod VPK（Military Tank / Policeman Tank / Soviet Teddy Bear Gnome），以及 L4D1 原版战役（`c1m1_hotel` ~ `c5m5_bridge`）与 No Special 自带图。
+
+> ⚠️ 旧机上的广州增城 `zc_m*`、地心引力 `dxyl*`、`l4d_yama*`、`mtlgth*`、`q_ancienttown*`（HOME TOWN）以及 `gzzc7.3.vpk` / `tianti.vpk` 在当前机器上**均未安装**。需要时按 Workshop ID 重新安装（见第 1 节），不要直接 `changelevel` 到不存在的地图。
+
+占用参考：`addons/` 2.4G、`maps/` 2.0G、`missions/` 40K。
 
 ---
 
@@ -45,8 +48,8 @@ sudo l4d2-add-map 3526529688
 
 双房间同步后按需重启：
 ```bash
-ssh myubuntu "sudo systemctl restart l4d2"
-ssh myubuntu "sudo systemctl restart l4d2_2"
+ssh myubuntu2 "sudo systemctl restart l4d2"
+ssh myubuntu2 "sudo systemctl restart l4d2_2"
 ```
 
 ### B. 三方下载源 (Steam API 备选方案)
@@ -159,8 +162,8 @@ ls /opt/l4d2/left4dead2/maps/*.bsp | xargs -n1 basename | sed 's/\.bsp//'
 
 容量检查命令：
 ```bash
-ssh myubuntu "df -h /opt/l4d2"
-ssh myubuntu "sudo du -sh /opt/l4d2/left4dead2/addons /opt/l4d2/left4dead2/maps /opt/l4d2/left4dead2/missions /opt/l4d2/left4dead2/downloads 2>/dev/null"
+ssh myubuntu2 "df -h /opt/l4d2"
+ssh myubuntu2 "sudo du -sh /opt/l4d2/left4dead2/addons /opt/l4d2/left4dead2/maps /opt/l4d2/left4dead2/missions /opt/l4d2/left4dead2/downloads 2>/dev/null"
 ```
 
 ### 如何清理旧地图：

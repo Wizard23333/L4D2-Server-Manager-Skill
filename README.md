@@ -65,7 +65,7 @@ Copy-Item -Recurse -Force .\skills\* .\.trae\skills\
 
 ### 推荐准备
 
-- 在本地 `~/.ssh/config` 配好服务器别名，例如 `myubuntu`。
+- 在本地 `~/.ssh/config` 配好服务器别名，例如 `myubuntu2`。
 - 在服务器侧使用非 root 用户运行 L4D2，例如 `steam`。
 - 将真实密码和 token 只保存在服务器配置或本机私有环境中。
 - 先阅读 [skills/l4d2-manager/SKILL.md](./skills/l4d2-manager/SKILL.md) 中的敏感信息处理规范和健康检查命令。
@@ -76,7 +76,7 @@ Copy-Item -Recurse -Force .\skills\* .\.trae\skills\
 $l4d2-manager 检查当前两个房间的运行状态
 $l4d2-manager 查看最近 24 小时的 L4D2 错误日志并判断是否影响玩家
 $l4d2-manager 帮我把 Workshop 地图 3526529688 安装到服务器
-$l4d2-manager 将 Room 2 切换到 zc_m1，并说明是否需要重启
+$l4d2-manager 将 Room 2 切换到 glubtastic5_1，并说明是否需要重启
 $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 ```
 
@@ -105,8 +105,13 @@ $l4d2-manager 检查 addons、maps、workshop 缓存占用，给出清理建议
 - **系统服务**：使用 Systemd 实现崩溃自启，当前维护 `l4d2` 与 `l4d2_2` 两个房间。
 
 ## 🧭 当前服务器形态
-- **Room 1**：`l4d2.service`，端口 `27015/udp`，默认地图 `hls_05`，偏 Steam 组内/私密。
-- **Room 2**：`l4d2_2.service`，端口 `27016/udp`，默认地图 `zc_m1`，公开可搜。
+> 更新时间：2026-10-10，由当前生产机 `myubuntu2`（主机名 `l4d2-server`）只读核验。
+
+- **Room 1**：`l4d2.service`，端口 `27015/udp`，默认地图 `l4d2_bts01_forest`，Steam 组内专属。
+- **Room 2**：`l4d2_2.service`，端口 `27016/udp`，默认地图 `glubtastic5_1`，公开可搜。
+- 两房间同属 Steam 组 `46097240`，共享 `/opt/l4d2/left4dead2/`，由非 root 用户 `steam` 运行。
+- 插件栈为 MetaMod:Source + SourceMod + Left4DHooks（**不含 Left 4 Bots 2**）。
+- Web 面板已部署并启用，监听 `8080/tcp`。
 - **常用检查**：服务状态、端口监听、最近错误日志已整理到详细 Skill 文档中。
 
 ## 🗺 3. 地图安装与管理
