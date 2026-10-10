@@ -4,6 +4,9 @@ node_modules/
 .npm-cache/
 deploy/l4d2-manager-web/frontend/dist/
 
+# vite 加载 TS 配置时落下的临时文件；受限环境下删除守卫会拦住它的自动清理
+vite.config.ts.timestamp-*.js
+
 # Accidental duplicate directory with a leading space; keep the real .trae/ tracked.
  .trae/
 

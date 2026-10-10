@@ -150,8 +150,181 @@ type WorkshopParts = {
   message?: string;
 };
 
+type Theme = "dark" | "light";
+type ToastTone = "ok" | "warn" | "danger" | "info";
+type ToastItem = { id: number; message: string; tone: ToastTone };
+
+const VIEW_IDS = ["overview", "performance", "rooms", "install", "packages", "mods", "maps", "migration"] as const;
+type ViewId = (typeof VIEW_IDS)[number];
+
+const NAV_GROUPS: Array<{ group: string; items: Array<{ id: ViewId; label: string; icon: string }> }> = [
+  {
+    group: "Monitor",
+    items: [
+      { id: "overview", label: "Overview", icon: "grid" },
+      { id: "performance", label: "Performance", icon: "gauge" }
+    ]
+  },
+  {
+    group: "Operate",
+    items: [
+      { id: "rooms", label: "Rooms", icon: "server" },
+      { id: "install", label: "Install & Jobs", icon: "download" }
+    ]
+  },
+  {
+    group: "Content",
+    items: [
+      { id: "packages", label: "Map Packages", icon: "box" },
+      { id: "mods", label: "Mods & Plugins", icon: "plug" },
+      { id: "maps", label: "Installed Maps", icon: "map" },
+      { id: "migration", label: "Migration", icon: "swap" }
+    ]
+  }
+];
+
+const VIEW_TITLES: Record<ViewId, string> = {
+  overview: "Overview",
+  performance: "Performance",
+  rooms: "Rooms",
+  install: "Install & Jobs",
+  packages: "Map Packages",
+  mods: "Mods & Plugins",
+  maps: "Installed Maps",
+  migration: "Migration"
+};
+
+const ICON_PATHS: Record<string, ReactNode> = {
+  grid: (
+    <>
+      <rect x="2.2" y="2.2" width="5" height="5" rx="1.2" />
+      <rect x="8.8" y="2.2" width="5" height="5" rx="1.2" />
+      <rect x="2.2" y="8.8" width="5" height="5" rx="1.2" />
+      <rect x="8.8" y="8.8" width="5" height="5" rx="1.2" />
+    </>
+  ),
+  gauge: (
+    <>
+      <path d="M2.4 11.4a6.4 6.4 0 1111.2 0" />
+      <path d="M8 11l3-3.4" />
+      <circle cx="8" cy="11.2" r="1.1" />
+    </>
+  ),
+  server: (
+    <>
+      <rect x="2.2" y="2.6" width="11.6" height="4.4" rx="1.2" />
+      <rect x="2.2" y="9" width="11.6" height="4.4" rx="1.2" />
+      <path d="M4.6 4.8h.01M4.6 11.2h.01" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M8 2v7.2" />
+      <path d="M5 6.4L8 9.4l3-3" />
+      <path d="M2.6 12.6h10.8" />
+    </>
+  ),
+  box: (
+    <>
+      <path d="M8 1.9l5.6 3.1v6.1L8 14.2 2.4 11.1V5z" />
+      <path d="M2.4 5L8 8.1 13.6 5" />
+      <path d="M8 8.1v6.1" />
+    </>
+  ),
+  plug: (
+    <>
+      <path d="M6 2v3.2M10 2v3.2" />
+      <path d="M4.2 5.2h7.6v2.4a3.8 3.8 0 01-7.6 0z" />
+      <path d="M8 11.2v2.8" />
+    </>
+  ),
+  map: (
+    <>
+      <path d="M2.2 4.2l3.8-1.9 4 1.9 3.8-1.9v9.4l-3.8 1.9-4-1.9-3.8 1.9z" />
+      <path d="M6 2.3v9.4M10 4.2v9.4" />
+    </>
+  ),
+  swap: (
+    <>
+      <path d="M3.2 5.6h9.2l-2.4-2.4" />
+      <path d="M12.8 10.4H3.6l2.4 2.4" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M13.4 8a5.4 5.4 0 11-1.7-4" />
+      <path d="M13.4 1.8v2.8h-2.8" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="8" cy="8" r="2.8" />
+      <path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M12.8 3.2l-1.1 1.1M4.3 11.7l-1.1 1.1" />
+    </>
+  ),
+  moon: <path d="M13.2 9.8A5.6 5.6 0 016.2 2.8a5.6 5.6 0 107 7z" />,
+  logout: (
+    <>
+      <path d="M6.2 2.4H3.6a1 1 0 00-1 1v9.2a1 1 0 001 1h2.6" />
+      <path d="M10.2 5.2L13 8l-2.8 2.8" />
+      <path d="M12.6 8H6.4" />
+    </>
+  ),
+  menu: <path d="M2.4 4h11.2M2.4 8h11.2M2.4 12h11.2" />,
+  check: <path d="M3.2 8.4l3.1 3.1 6.5-7" />,
+  alert: (
+    <>
+      <path d="M8 2.4l6.2 10.8H1.8z" />
+      <path d="M8 6.2v3.2M8 11.6h.01" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 7.2v4M8 5.3h.01" />
+    </>
+  )
+};
+
+function Icon({ name, size = 16 }: { name: string; size?: number }) {
+  return (
+    <svg
+      className="icon"
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {ICON_PATHS[name] ?? null}
+    </svg>
+  );
+}
+
 const activeJobStatuses = new Set(["queued", "running"]);
 const problemJobStatuses = new Set(["failed", "interrupted"]);
+
+const ROUTINE_NOTICE = /^(Loading|Refreshing|Updated|Searching|Preparing|Resolving|Submitting|Uploading|Verifying|Signing|Queueing|Installing|Saving|Restarting|Rebuilding|Updating|Removing|Deleting|Cancelling|Re-running)/i;
+const PROBLEM_NOTICE = /fail|error|invalid|denied|expired|not found|too large|timed out|unreachable|missing/i;
+
+const THEME_KEY = "l4d2-theme";
+
+function readTheme(): Theme {
+  try {
+    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+  } catch (error) {
+    return "dark";
+  }
+}
+
+function readHashView(): ViewId {
+  const raw = window.location.hash.replace(/^#/, "");
+  return (VIEW_IDS as readonly string[]).includes(raw) ? (raw as ViewId) : "overview";
+}
 
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const response = await fetch(input, { credentials: "same-origin", ...init });
@@ -242,20 +415,24 @@ function matchesPackageFilters(addon: Addon, filters: PackageFilters) {
   return true;
 }
 
-const navSections: Array<[string, string]> = [
-  ["overview", "Overview"],
-  ["performance", "Performance"],
-  ["rooms", "Rooms"],
-  ["install", "Install & Jobs"],
-  ["packages", "Map Packages"],
-  ["migration", "Migration"],
-  ["mods", "Mods & Plugins"],
-  ["maps", "Installed Maps"]
-];
+function packageSizeLabel(addon: Addon) {
+  if (addon.state === "remote") return "not downloaded";
+  if (addon.state === "deleted") return "removed";
+  return fileSizeMb(addon.size);
+}
+
+function packageMapsLabel(addon: Addon) {
+  if (!addon.maps.length) return "mission only";
+  return `${addon.maps.length} map${addon.maps.length > 1 ? "s" : ""}`;
+}
 
 export default function App() {
   const [state, setState] = useState<StateSnapshot | null>(null);
-  const [notice, setNotice] = useState("Loading...");
+  const [status, setStatus] = useState("Loading...");
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  const [view, setView] = useState<ViewId>(readHashView);
+  const [drawer, setDrawer] = useState(false);
   const [catalogResults, setCatalogResults] = useState<CatalogItem[]>([]);
   const [jobFilter, setJobFilter] = useState("current");
   const [packageFilters, setPackageFilters] = useState<PackageFilters>({ text: "", status: "all", source: "all", record: "all" });
@@ -263,6 +440,60 @@ export default function App() {
   const [selectedManifest, setSelectedManifest] = useState<Set<string>>(new Set());
   const [autoRefresh, setAutoRefresh] = useState(true);
   const timer = useRef<number | undefined>();
+  const toastSeq = useRef(0);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (error) {
+      /* storage unavailable — theme still applies for this session */
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    function onHashChange() {
+      setView(readHashView());
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.overflow = drawer ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [drawer]);
+
+  function navigate(next: ViewId) {
+    setView(next);
+    setDrawer(false);
+    if (window.location.hash !== `#${next}`) {
+      window.location.hash = next;
+    }
+    window.scrollTo({ top: 0 });
+  }
+
+  function pushToast(message: string, tone: ToastTone) {
+    const id = (toastSeq.current += 1);
+    setToasts((list) => [...list.slice(-3), { id, message, tone }]);
+    window.setTimeout(() => {
+      setToasts((list) => list.filter((item) => item.id !== id));
+    }, 5200);
+  }
+
+  function setNotice(message: string) {
+    setStatus(message);
+    const text = (message || "").trim();
+    if (!text) return;
+    if (PROBLEM_NOTICE.test(text)) {
+      pushToast(text, "danger");
+      return;
+    }
+    if (ROUTINE_NOTICE.test(text) || /cancelled/i.test(text)) return;
+    pushToast(text, "ok");
+  }
 
   async function loadState(message = "Loading...") {
     setNotice(message);
@@ -270,7 +501,7 @@ export default function App() {
     if (!response.ok) throw new Error("Failed to load state");
     const data = (await response.json()) as StateSnapshot;
     setState(data);
-    setNotice(`Updated ${new Date(data.generated_at * 1000).toLocaleString()}`);
+    setNotice(`Updated ${new Date(data.generated_at * 1000).toLocaleTimeString()}`);
   }
 
   useEffect(() => {
@@ -311,62 +542,49 @@ export default function App() {
 
   if (!state) {
     return (
-      <div className="shell boot">
+      <div className="boot">
         <div className="boot-card">
-          <div className="brand-mark">L4D2</div>
-          <h1>L4D2 Server Manager</h1>
-          <p>{notice}</p>
+          <div className="brand-logo">L4D2</div>
+          <h1>Server Manager</h1>
+          <p>{status}</p>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="topbar-main">
-          <div>
-            <div className="eyebrow">Dedicated server control plane</div>
-            <h1>L4D2 Server Manager</h1>
+  const roomsOnline = state.rooms.filter((room) => room.active === "active" && room.port_listening).length;
+  const activeJobs = state.jobs.filter((job) => activeJobStatuses.has(job.status)).length;
+  const problemJobs = state.jobs.filter((job) => problemJobStatuses.has(job.status)).length;
+  const health = problemJobs > 0 || roomsOnline < state.rooms.length ? "warn" : "ok";
+
+  const navBadges: Partial<Record<ViewId, { label: string; tone: string }>> = {
+    rooms: { label: `${roomsOnline}/${state.rooms.length}`, tone: roomsOnline < state.rooms.length ? "warn" : "ok" },
+    install: problemJobs > 0
+      ? { label: `${problemJobs} failed`, tone: "danger" }
+      : activeJobs > 0
+        ? { label: `${activeJobs} active`, tone: "live" }
+        : { label: `${state.jobs.length}`, tone: "" }
+  };
+
+  function renderView() {
+    switch (view) {
+      case "overview":
+        return <Overview state={state as StateSnapshot} onNavigate={navigate} />;
+      case "performance":
+        return <SystemPanel system={state!.system} />;
+      case "rooms":
+        return <RoomsPanel state={state as StateSnapshot} runAction={runAction} />;
+      case "install":
+        return (
+          <div className="two-column">
+            <InstallPanel results={catalogResults} setResults={setCatalogResults} setNotice={setNotice} loadState={loadState} />
+            <JobsPanel jobs={state!.jobs} jobFilter={jobFilter} setJobFilter={setJobFilter} runAction={runAction} />
           </div>
-          <div className="top-actions">
-            <span className="notice">{notice}</span>
-            <label className="toggle">
-              <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
-              Auto refresh
-            </label>
-            <button className="secondary" onClick={() => loadState("Refreshing...")}>Refresh</button>
-            <button className="secondary" onClick={logout}>Logout</button>
-          </div>
-        </div>
-        <nav className="section-nav">
-          {navSections.map(([id, label]) => (
-            <a key={id} href={`#${id}`}>{label}</a>
-          ))}
-        </nav>
-      </header>
-      <main>
-        <section id="overview" className="anchor">
-          <Overview state={state} />
-        </section>
-        <section id="performance" className="anchor">
-          <SystemPanel system={state.system} />
-        </section>
-        <section id="rooms" className="anchor">
-          <RoomsPanel state={state} runAction={runAction} />
-        </section>
-        <section id="install" className="anchor two-column">
-          <InstallPanel
-            results={catalogResults}
-            setResults={setCatalogResults}
-            setNotice={setNotice}
-            loadState={loadState}
-          />
-          <JobsPanel jobs={state.jobs} jobFilter={jobFilter} setJobFilter={setJobFilter} runAction={runAction} />
-        </section>
-        <section id="packages" className="anchor">
+        );
+      case "packages":
+        return (
           <PackagesPanel
-            addons={state.addons}
+            addons={state!.addons}
             filters={packageFilters}
             setFilters={setPackageFilters}
             selectedPackages={selectedPackages}
@@ -377,57 +595,191 @@ export default function App() {
             loadState={loadState}
             setNotice={setNotice}
           />
-        </section>
-        <section id="migration" className="anchor">
+        );
+      case "mods":
+        return (
+          <div className="two-column">
+            <ModsPanel addons={state!.addons} selectedManifest={selectedManifest} setSelectedManifest={setSelectedManifest} runAction={runAction} />
+            <PluginsPanel plugins={state!.server_plugins} runAction={runAction} />
+          </div>
+        );
+      case "maps":
+        return <CampaignPanel campaigns={state!.campaigns} mapCount={state!.maps.length} />;
+      case "migration":
+        return (
           <MigrationPanel
             selectedPackages={selectedPackages}
             selectedManifest={selectedManifest}
-            runAction={runAction}
             loadState={loadState}
             setNotice={setNotice}
           />
-        </section>
-        <section id="mods" className="anchor two-column">
-          <ModsPanel addons={state.addons} selectedManifest={selectedManifest} setSelectedManifest={setSelectedManifest} runAction={runAction} />
-          <PluginsPanel plugins={state.server_plugins} runAction={runAction} />
-        </section>
-        <section id="maps" className="anchor">
-          <CampaignPanel campaigns={state.campaigns} mapCount={state.maps.length} />
-        </section>
+        );
+      default:
+        return null;
+    }
+  }
+
+  return (
+    <div className={`app ${drawer ? "drawer-open" : ""}`}>
+      {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-logo">L4D2</div>
+          <div className="brand-text">
+            <strong>Server Manager</strong>
+            <span>Dedicated</span>
+          </div>
+        </div>
+        <nav className="nav">
+          {NAV_GROUPS.map((section) => (
+            <div key={section.group}>
+              <div className="nav-group">{section.group}</div>
+              {section.items.map((item) => {
+                const badge = navBadges[item.id];
+                return (
+                  <button
+                    key={item.id}
+                    className={`nav-item ${view === item.id ? "active" : ""}`}
+                    onClick={() => navigate(item.id)}
+                  >
+                    <span className="nav-icon"><Icon name={item.icon} /></span>
+                    <span className="nav-label">{item.label}</span>
+                    {badge ? <span className={`nav-badge ${badge.tone}`}>{badge.label}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <div className="foot-status">
+            <div className="row">
+              <span className={`dot ${health}`} />
+              <span title={status}>{status}</span>
+            </div>
+          </div>
+          <div className="foot-actions">
+            <label className="switch">
+              <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
+              <span>Auto</span>
+            </label>
+            <button className="icon-btn" title="Refresh now" aria-label="Refresh now" onClick={() => loadState("Refreshing...")}>
+              <Icon name="refresh" />
+            </button>
+            <button
+              className="icon-btn"
+              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              aria-label="Toggle theme"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              <Icon name={theme === "dark" ? "sun" : "moon"} />
+            </button>
+            <button className="icon-btn" title="Log out" aria-label="Log out" onClick={logout}>
+              <Icon name="logout" />
+            </button>
+          </div>
+        </div>
+      </aside>
+      <main className="main">
+        <div className="mobile-bar">
+          <button className="icon-btn" aria-label="Open navigation" onClick={() => setDrawer(true)}>
+            <Icon name="menu" />
+          </button>
+          <span className="title">{VIEW_TITLES[view]}</span>
+          <span className={`dot ${health}`} />
+        </div>
+        <div className="page">{renderView()}</div>
       </main>
+      {toasts.length > 0 && (
+        <div className="toast-stack">
+          {toasts.map((toast) => (
+            <div className={`toast ${toast.tone}`} key={toast.id} role="status">
+              <Icon name={toast.tone === "ok" ? "check" : toast.tone === "info" ? "info" : "alert"} />
+              <div className="toast-message">{toast.message}</div>
+              <button
+                className="toast-close"
+                aria-label="Dismiss"
+                onClick={() => setToasts((list) => list.filter((item) => item.id !== toast.id))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Overview({ state }: { state: StateSnapshot }) {
+function Overview({ state, onNavigate }: { state: StateSnapshot; onNavigate: (view: ViewId) => void }) {
   const roomsOnline = state.rooms.filter((room) => room.active === "active" && room.port_listening).length;
   const runningJobs = state.jobs.filter((job) => activeJobStatuses.has(job.status)).length;
   const problemJobs = state.jobs.filter((job) => problemJobStatuses.has(job.status)).length;
   const mapPackages = state.addons.filter((addon) => addon.kind === "map").length;
-  const disabledMods = state.addons.filter((addon) => addon.kind !== "map" && addon.state === "disabled").length;
-  const cards: Array<{ label: string; value: string | number; tone?: string; href?: string }> = [
-    { label: "Rooms online", value: `${roomsOnline}/${state.rooms.length}`, tone: roomsOnline < state.rooms.length ? "warn" : "ok" },
-    { label: "Running jobs", value: runningJobs, tone: runningJobs > 0 ? "live" : "" },
-    { label: "Problem jobs", value: problemJobs, tone: problemJobs > 0 ? "danger" : "ok", href: problemJobs > 0 ? "#install" : undefined },
-    { label: "Map packages", value: mapPackages },
-    { label: "Disabled mods", value: disabledMods, tone: disabledMods > 0 ? "warn" : "" }
+  const mods = state.addons.filter((addon) => addon.kind !== "map");
+  const disabledMods = mods.filter((addon) => addon.state === "disabled").length;
+
+  const cards: Array<{ label: string; value: string | number; tone: string; detail: string; view?: ViewId }> = [
+    {
+      label: "Rooms online",
+      value: `${roomsOnline}/${state.rooms.length}`,
+      tone: roomsOnline < state.rooms.length ? "warn" : "ok",
+      detail: roomsOnline < state.rooms.length ? "check services" : "all listening",
+      view: "rooms"
+    },
+    {
+      label: "Running jobs",
+      value: runningJobs,
+      tone: "",
+      detail: runningJobs > 0 ? "in progress" : "idle"
+    },
+    {
+      label: "Failed jobs",
+      value: problemJobs,
+      tone: problemJobs > 0 ? "danger" : "ok",
+      detail: problemJobs > 0 ? "needs review" : "none",
+      view: "install"
+    },
+    {
+      label: "Map packages",
+      value: mapPackages,
+      tone: "",
+      detail: `${state.maps.length} maps installed`,
+      view: "packages"
+    },
+    {
+      label: "Mods",
+      value: mods.length,
+      tone: disabledMods > 0 ? "warn" : "",
+      detail: disabledMods > 0 ? `${disabledMods} disabled` : "all enabled",
+      view: "mods"
+    }
   ];
+
   return (
-    <div className="overview-grid">
-      {cards.map((card) => {
-        const content = (
-          <>
-            <span>{card.label}</span>
-            <strong>{card.value}</strong>
-          </>
-        );
-        return card.href ? (
-          <a className={`metric-card link ${card.tone || ""}`} key={card.label} href={card.href}>{content}</a>
-        ) : (
-          <article className={`metric-card ${card.tone || ""}`} key={card.label}>{content}</article>
-        );
-      })}
-    </div>
+    <section>
+      <PanelHead title="Overview" subtitle="Rooms, jobs, and content at a glance." />
+      <div className="kpi-strip">
+        {cards.map((card) => {
+          const body = (
+            <>
+              <span className="kpi-label">{card.label}</span>
+              <span className="kpi-value">{card.value}</span>
+              <span className="kpi-detail">{card.detail}</span>
+            </>
+          );
+          return card.view ? (
+            <button className={`kpi ${card.tone}`} key={card.label} onClick={() => onNavigate(card.view as ViewId)}>
+              {body}
+            </button>
+          ) : (
+            <article className={`kpi ${card.tone}`} key={card.label}>
+              {body}
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -453,9 +805,9 @@ function SystemPanel({ system }: { system?: SystemSnapshot }) {
   const load = Array.isArray(cpu.load_average) ? cpu.load_average.filter((value) => value !== null).join(", ") : "unknown";
   return (
     <section className="panel">
-      <PanelHead title="Server Performance" subtitle="Live host pressure, service process state, and storage health." badge="live" />
+      <PanelHead title="Server Performance" subtitle="Host pressure, service processes, and storage." badge="live" />
       <div className="metric-grid">
-        <Metric label="CPU" value={formatPercent(cpu.percent)} detail={`${cpu.cores || 0} cores / load ${load || "unknown"}`} percent={cpu.percent} warn={75} danger={90} />
+        <Metric label="CPU" value={formatPercent(cpu.percent)} detail={`${cpu.cores || 0} cores · load ${load || "unknown"}`} percent={cpu.percent} warn={75} danger={90} />
         <Metric label="Memory" value={`${formatBytes(memory.used)} / ${formatBytes(memory.total)}`} detail={`${formatBytes(memory.available)} available`} percent={memory.percent} warn={75} danger={90} />
         <Metric label="Swap" value={`${formatBytes(swap.used)} / ${formatBytes(swap.total)}`} detail={`${formatBytes(swap.free)} free`} percent={swap.percent} warn={40} danger={75} />
         <Metric label="Uptime" value={system.uptime?.display || "unknown"} />
@@ -473,7 +825,7 @@ function SystemPanel({ system }: { system?: SystemSnapshot }) {
           </div>
         ))}
       </div>
-      <div className="disk-grid">
+      <div className="metric-grid disk-grid">
         {(system.disk || []).map((disk) => (
           <Metric
             key={disk.id}
@@ -520,7 +872,7 @@ function RoomsPanel({ state, runAction }: { state: StateSnapshot; runAction: (ac
 
   return (
     <section>
-      <PanelHead title="Room Management" subtitle="Save default maps without disconnecting players; restart actions interrupt the target room." />
+      <PanelHead title="Room Management" subtitle="Saving a default map is safe; restarting interrupts the room." />
       <div className="room-grid">
         {state.rooms.map((room) => {
           const online = room.active === "active" && room.port_listening;
@@ -529,14 +881,13 @@ function RoomsPanel({ state, runAction }: { state: StateSnapshot; runAction: (ac
               <div className="card-title">
                 <div>
                   <h3>{room.label}</h3>
-                  <small>{room.service} / UDP {room.port}</small>
+                  <small>{room.service} · UDP {room.port}</small>
                 </div>
                 <Pill label={online ? "running" : room.active} tone={online ? "ok" : "danger"} />
               </div>
               <dl className="facts">
                 <dt>Default map</dt><dd>{room.default_map || "unknown"}</dd>
                 <dt>Port</dt><dd>{room.port_listening ? "listening" : "not listening"}</dd>
-                <dt>Sub-state</dt><dd>{room.sub_state}</dd>
                 <dt>Restarts</dt><dd>{room.restarts}</dd>
                 <dt>Started</dt><dd>{room.started_at || "unknown"}</dd>
               </dl>
@@ -558,9 +909,9 @@ function RoomsPanel({ state, runAction }: { state: StateSnapshot; runAction: (ac
                 </select>
               </div>
               <div className="actions">
-                <button onClick={() => runAction(() => save(room, false), "Saving default map...")}>Save</button>
-                <button className="danger" onClick={() => window.confirm(`Restart ${room.label}? Current players may disconnect.`) && runAction(() => save(room, true), "Saving and restarting...")}>Save + Restart</button>
-                <button className="secondary" onClick={() => window.confirm(`Restart ${room.label}? Current players may disconnect.`) && runAction(() => restart(room), "Restarting room...")}>Restart</button>
+                <button onClick={() => runAction(() => save(room, false), "Saving default map...")}>Save map</button>
+                <button className="danger" onClick={() => window.confirm(`Save and restart ${room.label}? Players will disconnect.`) && runAction(() => save(room, true), "Saving and restarting...")}>Save &amp; restart</button>
+                <button className="danger" onClick={() => window.confirm(`Restart ${room.label}? Players will disconnect.`) && runAction(() => restart(room), "Restarting room...")}>Restart</button>
               </div>
             </article>
           );
@@ -655,7 +1006,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
         return;
       }
       setProxyResolve(payload);
-      setNotice("Proxy download ready — download on your machine, then upload to install.");
+      setNotice("Download links ready — fetch on your machine, then upload to install.");
     } catch (error) {
       setProxyResolve(null);
       setNotice(error instanceof Error ? error.message : "Failed to resolve download links");
@@ -710,11 +1061,11 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
       setLocalParts(payload);
       setLocalFiles([]);
       const usable = (payload.parts || []).filter((p) => p.ok);
-      setNotice(`${usable.length} downloadable part(s) found — choose your .vpk file(s) to auto-match by size.`);
+      setNotice(`${usable.length} downloadable part(s) found — pick your .vpk file(s) to match by size.`);
     } catch (error) {
       setLocalParts(null);
       if (error instanceof DOMException && error.name === "AbortError") {
-        setNotice("Resolve timed out — Steam may be unreachable from the server. Try again, or use 'Install ID' / 'Proxy download'.");
+        setNotice("Resolve timed out — Steam may be unreachable from the server. Try 'Install ID' or 'Proxy download'.");
       } else {
         setNotice(error instanceof Error ? error.message : "Failed to resolve parts");
       }
@@ -738,7 +1089,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
     const next = files.map((file) => ({ file, pick: autoMatchPick(file.size) }));
     setLocalFiles(next);
     const auto = next.filter((entry) => entry.pick).length;
-    setNotice(`${files.length} file(s) selected · ${auto} auto-matched by size · resolve the rest manually if needed.`);
+    setNotice(`${files.length} file(s) selected · ${auto} auto-matched by size.`);
   }
 
   function setFilePick(index: number, pick: string) {
@@ -801,7 +1152,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
           </div>
         </div>
       )}
-      <PanelHead title="Install Maps and Mods" subtitle="Search Workshop/GameMaps candidates or install a known Workshop ID directly." badge="Workshop / GameMaps" />
+      <PanelHead title="Install Maps and Mods" subtitle="Search the catalog, or install a known Workshop ID directly." badge="Workshop" />
       <form className="tool-row" onSubmit={(event) => { event.preventDefault(); search(); }}>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Run To The Hills" />
         <select value={kind} onChange={(event) => setKind(event.target.value)}>
@@ -828,8 +1179,8 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
         />
       )}
       <div className="tool-card proxy-local">
-        <h3>Smart local install (verified against a Workshop ID)</h3>
-        <p>Have a matching <code>.vpk</code> on your machine? Enter the Workshop ID, then choose the file — the server resolves which parts belong to that ID and verifies your file by exact byte size before installing it under that ID.</p>
+        <h3>Verified local install</h3>
+        <p>Already have the matching <code>.vpk</code>? Enter the Workshop ID, then pick the file — the server verifies it by exact byte size before installing it under that ID.</p>
         <div className="tool-row">
           <input
             value={localId}
@@ -853,7 +1204,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
                   <div className={`proxy-item${matched ? " matched" : ""}`} key={`${part.workshop_id || index}`}>
                     <div className="proxy-meta">
                       <strong>{part.title || `Workshop ${part.workshop_id}`}</strong>
-                      <div className="muted mono">
+                      <div className="mono">
                         {part.workshop_id}
                         {part.file_size ? ` · ${formatBytes(part.file_size)}` : ""}
                       </div>
@@ -878,7 +1229,7 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
                     <div className="proxy-item" key={`${entry.file.name}-${index}`}>
                       <div className="proxy-meta">
                         <strong>{entry.file.name}</strong>
-                        <div className="muted mono">{formatBytes(entry.file.size)}</div>
+                        <div className="mono">{formatBytes(entry.file.size)}</div>
                       </div>
                       <div className="actions right">
                         {entry.pick
@@ -907,8 +1258,8 @@ function InstallPanel({ results, setResults, setNotice, loadState }: {
           <article className="result-item" key={`${item.source}-${item.id}`}>
             <div>
               <strong>{item.title}</strong>
-              <div className="muted mono">{item.kind} / {item.source} {item.id}</div>
-              {item.install_ids && item.install_ids.length > 1 && <div className="muted mono">packages {item.install_ids.join(", ")}</div>}
+              <div className="mono">{item.kind} · {item.source} {item.id}</div>
+              {item.install_ids && item.install_ids.length > 1 && <div className="mono">packages {item.install_ids.join(", ")}</div>}
               {item.summary && <p>{item.summary}</p>}
               {item.reason && <small>{item.reason}</small>}
             </div>
@@ -938,17 +1289,17 @@ function ProxyDownloadCard({ resolve, submitting, onClose, onInstallFile }: {
   return (
     <div className="tool-card proxy-card">
       <div className="proxy-head">
-        <h3>Proxy download {resolve.collection ? `(collection · ${items.length} parts)` : ""}</h3>
+        <h3>Proxy download {resolve.collection ? `· ${items.length} parts` : ""}</h3>
         <button className="secondary" onClick={onClose}>Close</button>
       </div>
-      <p>Steam downloads run through <strong>your machine</strong>: ① download the file locally, then ② select it to upload &amp; install on the server. Use this when the server cannot reach Steam reliably.</p>
+      <p>Download on <strong>your machine</strong>, then upload to install. Use this when the server cannot reach Steam.</p>
       <div className="proxy-list">
-        {!downloadable.length && <div className="empty-state">No downloadable file_url returned (item may be restricted).</div>}
+        {!downloadable.length && <div className="empty-state">No downloadable link returned — the item may be restricted.</div>}
         {items.map((entry, index) => (
           <div className="proxy-item" key={`${entry.workshop_id || index}`}>
             <div className="proxy-meta">
               <strong>{entry.title || `Workshop ${entry.workshop_id}`}</strong>
-              <div className="muted mono">
+              <div className="mono">
                 {entry.suggested_filename || entry.workshop_id}
                 {entry.file_size ? ` · ${formatBytes(entry.file_size)}` : ""}
               </div>
@@ -996,7 +1347,7 @@ function JobsPanel({ jobs, jobFilter, setJobFilter, runAction }: {
   }
 
   async function remove(job: Job) {
-    if (!window.confirm("Delete this job record? This only removes the history entry.")) return "Delete cancelled";
+    if (!window.confirm("Delete this job record? Only the history entry is removed.")) return "Delete cancelled";
     const { payload } = await postForm("/api/job/delete", { job_id: job.id });
     return payload.message;
   }
@@ -1008,7 +1359,7 @@ function JobsPanel({ jobs, jobFilter, setJobFilter, runAction }: {
 
   return (
     <section className="panel">
-      <PanelHead title="Jobs" subtitle="Install, export, import, and plugin tasks with active failures kept visible." badge={`${currentJobs.length} current`} />
+      <PanelHead title="Jobs" subtitle="Install, export, and import tasks." badge={`${currentJobs.length} current`} />
       <Segmented value={jobFilter} setValue={setJobFilter} options={[["current", "Current"], ["problem", "Failed"], ["history", "History"], ["all", "All"]]} />
       <div className="job-list">
         {!filtered.length && <div className="empty-state">No jobs match this filter.</div>}
@@ -1020,12 +1371,12 @@ function JobsPanel({ jobs, jobFilter, setJobFilter, runAction }: {
               <div className="card-title">
                 <div>
                   <h3>{job.title || job.catalog_id || job.workshop_id || job.export_filename || job.id}</h3>
-                  <small>{job.type || job.source || "task"} {job.kind || ""} / {job.stage || "done"}</small>
+                  <small>{job.type || job.source || "task"} {job.kind || ""} · {job.stage || "done"}</small>
                 </div>
                 <Pill label={job.status} tone={statusClass(job.status)} />
               </div>
               {(active || typeof job.progress === "number") && <JobProgress job={job} active={active} />}
-              {job.install_ids && job.install_ids.length > 1 && <div className="muted mono">packages {job.install_ids.join(", ")}</div>}
+              {job.install_ids && job.install_ids.length > 1 && <div className="mono muted">packages {job.install_ids.join(", ")}</div>}
               {job.message && <JobMessage message={job.message} />}
               <div className="actions">
                 {active && <button className="secondary" onClick={() => runAction(() => cancel(job), "Cancelling job...")}>Cancel</button>}
@@ -1167,7 +1518,7 @@ function PackagesPanel(props: {
   async function deletePackage(addon: Addon, mode: "soft" | "purge") {
     const copy = mode === "purge"
       ? `Permanently delete ${addon.filename}? This removes local files and source records.`
-      : `Delete local files for ${addon.filename}? Source records are kept for reinstall.`;
+      : `Delete local files for ${addon.filename}? Source records stay for reinstall.`;
     if (!window.confirm(copy)) return "Delete cancelled";
     const { payload } = await postForm("/api/map-package/delete", { filename: addon.filename, mode });
     return payload.message;
@@ -1184,7 +1535,7 @@ function PackagesPanel(props: {
   }
 
   async function removeManifest(addon: Addon) {
-    if (!window.confirm(`Remove source record for ${addon.filename}? Local VPK files are not deleted.`)) return "Remove cancelled";
+    if (!window.confirm(`Remove source record for ${addon.filename}? Local VPK files stay.`)) return "Remove cancelled";
     const { payload } = await postForm("/api/manifest/remove-record", { filename: addon.filename });
     return payload.message;
   }
@@ -1200,34 +1551,45 @@ function PackagesPanel(props: {
     const remote = addon.state === "remote";
     const deleted = addon.state === "deleted";
     const baseTitle = addon.title && addon.title !== addon.filename ? stripPartSuffix(addon.title) : addon.filename;
-    const idHint = addon.source && addon.catalog_id ? `${addon.source} ${addon.catalog_id}` : "local package";
     return (
-      <article className="package-row" key={addon.filename}>
-        <div className="check-stack">
-          <label><input type="checkbox" checked={props.selectedManifest.has(addon.filename)} onChange={(event) => toggle(props.setSelectedManifest, props.selectedManifest, addon.filename, event.target.checked)} /> Manifest</label>
-          {!remote && !deleted && <label><input type="checkbox" checked={props.selectedPackages.has(addon.filename)} onChange={(event) => toggle(props.setSelectedPackages, props.selectedPackages, addon.filename, event.target.checked)} /> ZIP</label>}
+      <article className="pkg-row" key={addon.filename}>
+        <div className="pkg-select">
+          <label>
+            <input type="checkbox" checked={props.selectedManifest.has(addon.filename)} onChange={(event) => toggle(props.setSelectedManifest, props.selectedManifest, addon.filename, event.target.checked)} />
+            Manifest
+          </label>
+          {!remote && !deleted && (
+            <label>
+              <input type="checkbox" checked={props.selectedPackages.has(addon.filename)} onChange={(event) => toggle(props.setSelectedPackages, props.selectedPackages, addon.filename, event.target.checked)} />
+              ZIP
+            </label>
+          )}
         </div>
-        <div>
-          <strong>{baseTitle}</strong>
-          <div className="muted mono">{addon.filename}</div>
-          <div className="muted mono">{addon.maps.length ? addon.maps.join(", ") : "mission only"}</div>
+        <div className="pkg-main">
+          <div className="pkg-title">
+            <strong title={baseTitle}>{baseTitle}</strong>
+            {addon.source && addon.catalog_id ? <span className="tag">{addon.source} {addon.catalog_id}</span> : <span className="tag">local</span>}
+          </div>
+          <div className="pkg-meta" title={addon.maps.join(", ") || "mission only"}>
+            {addon.filename} · {packageMapsLabel(addon)} · {packageSizeLabel(addon)}
+          </div>
         </div>
         <Pill label={addon.state} tone={statusClass(addon.state)} />
-        <span>{remote ? "not downloaded" : deleted ? "removed" : fileSizeMb(addon.size)}</span>
-        <span className="muted">{idHint}</span>
-        <div className="actions right">
-          {addon.url && <a href={addon.url} target="_blank" rel="noreferrer">Open</a>}
-          {!remote && !deleted && <button className="secondary" onClick={() => props.runAction(() => exportOne(addon), "Queueing export...")}>Export ZIP</button>}
-          {addon.reinstallable && !remote && <button onClick={() => props.runAction(() => reinstall(addon), "Queueing reinstall...")}>Reinstall</button>}
-          {remote && addon.reinstallable && <button onClick={() => props.runAction(() => installManifest(addon), "Queueing source install...")}>Install Source</button>}
-          {remote && <button className="secondary" onClick={() => props.runAction(() => removeManifest(addon), "Removing source record...")}>Remove Record</button>}
-          {!deleted && !remote && <button className="secondary" onClick={() => props.runAction(() => addonState(addon), "Updating package state...")}>{addon.state === "enabled" ? "Disable" : "Enable"}</button>}
-          {!deleted && (
-            <RowMenu>
-              {!remote && <button className="menu-item danger" onClick={() => props.runAction(() => deletePackage(addon, "soft"), "Deleting local files...")}>Delete Local</button>}
-              <button className="menu-item danger" onClick={() => props.runAction(() => deletePackage(addon, "purge"), "Purging package...")}>Purge</button>
-            </RowMenu>
+        <div className="pkg-actions">
+          {!deleted && !remote && (
+            <button className="secondary sm" onClick={() => props.runAction(() => addonState(addon), "Updating package state...")}>
+              {addon.state === "enabled" ? "Disable" : "Enable"}
+            </button>
           )}
+          <RowMenu>
+            {addon.url && <a className="menu-item" href={addon.url} target="_blank" rel="noreferrer">Open page</a>}
+            {!remote && !deleted && <button className="menu-item" onClick={() => props.runAction(() => exportOne(addon), "Queueing export...")}>Export ZIP</button>}
+            {addon.reinstallable && !remote && !deleted && <button className="menu-item" onClick={() => props.runAction(() => reinstall(addon), "Queueing reinstall...")}>Reinstall</button>}
+            {remote && addon.reinstallable && <button className="menu-item" onClick={() => props.runAction(() => installManifest(addon), "Queueing source install...")}>Install source</button>}
+            {remote && <button className="menu-item" onClick={() => props.runAction(() => removeManifest(addon), "Removing source record...")}>Remove record</button>}
+            {!remote && !deleted && <button className="menu-item danger" onClick={() => props.runAction(() => deletePackage(addon, "soft"), "Deleting local files...")}>Delete local files</button>}
+            {!deleted && <button className="menu-item danger" onClick={() => props.runAction(() => deletePackage(addon, "purge"), "Purging package...")}>Purge package</button>}
+          </RowMenu>
         </div>
       </article>
     );
@@ -1251,7 +1613,7 @@ function PackagesPanel(props: {
     <section className="panel">
       <PanelHead title="Map Packages" subtitle="Filter installed and recorded packages; deletion keeps source records unless purged." badge={`${filtered.length}/${packages.length} visible`} />
       <div className="filter-row">
-        <input value={props.filters.text} onChange={(event) => updateFilters({ text: event.target.value })} placeholder="Filter title, file, map, or source ID" />
+        <input value={props.filters.text} onChange={(event) => updateFilters({ text: event.target.value })} placeholder="Filter packages" />
         <select value={props.filters.status} onChange={(event) => updateFilters({ status: event.target.value })}>
           <option value="all">All states</option>
           <option value="enabled">Enabled</option>
@@ -1267,12 +1629,12 @@ function PackagesPanel(props: {
         </select>
         <select value={props.filters.record} onChange={(event) => updateFilters({ record: event.target.value })}>
           <option value="all">All records</option>
-          <option value="with">Has source record</option>
-          <option value="without">No source record</option>
+          <option value="with">Has record</option>
+          <option value="without">No record</option>
         </select>
         <button className="secondary" disabled={regrouping} onClick={regroup}>{regrouping ? "Rebuilding..." : "Rebuild groups"}</button>
       </div>
-      <div className="package-list">
+      <div className="pkg-list">
         {!filtered.length && <div className="empty-state">No map packages match this filter.</div>}
         {groups.map((group) => {
           if (group.members.length <= 1) {
@@ -1282,17 +1644,19 @@ function PackagesPanel(props: {
           const totalSize = group.members.reduce((sum, m) => sum + (m.size || 0), 0);
           const groupTitle = group.title || stripPartSuffix(group.members[0].title) || group.members[0].filename;
           return (
-            <div className={`package-group ${open ? "open" : ""}`} key={group.key}>
-              <button type="button" className="package-group-head" onClick={() => toggleExpanded(group.key)}>
+            <div className={`pkg-group ${open ? "open" : ""}`} key={group.key}>
+              <button type="button" className="pkg-group-head" onClick={() => toggleExpanded(group.key)}>
                 <span className="group-arrow">{open ? "\u25be" : "\u25b8"}</span>
                 <div className="group-meta">
-                  <strong>{groupTitle}</strong>
-                  <div className="muted mono">workshop {group.key} · {group.members.length} parts</div>
+                  <div className="group-title">
+                    <strong>{groupTitle}</strong>
+                    <Pill label={groupStateLabel(group.members)} tone={groupTone(group.members)} />
+                  </div>
+                  <div className="mono">{group.members.length} parts · workshop {group.key}</div>
                 </div>
-                <Pill label={groupStateLabel(group.members)} tone={groupTone(group.members)} />
                 <span>{fileSizeMb(totalSize)}</span>
               </button>
-              {open && <div className="package-group-body">{group.members.map((member) => renderRow(member))}</div>}
+              {open && <div className="pkg-group-body">{group.members.map((member) => renderRow(member))}</div>}
             </div>
           );
         })}
@@ -1304,7 +1668,6 @@ function PackagesPanel(props: {
 function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNotice }: {
   selectedPackages: Set<string>;
   selectedManifest: Set<string>;
-  runAction: (action: () => Promise<string | undefined>, loading: string) => Promise<void>;
   loadState: (message?: string) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
@@ -1361,36 +1724,36 @@ function MigrationPanel({ selectedPackages, selectedManifest, loadState, setNoti
 
   return (
     <section className="panel">
-      <PanelHead title="Migration" subtitle="Prefer source manifests; use ZIP when sources are unavailable; use VPK for emergency single-file imports." badge="Manifest / ZIP / VPK" />
+      <PanelHead title="Migration" subtitle="Source manifest first; ZIP when sources are gone; VPK for single-file imports." badge="Manifest / ZIP / VPK" />
       <div className="migration-grid">
         <div className="tool-card">
           <h3>Source manifest</h3>
           <p>Moves source records and reinstall metadata without transferring large VPK files.</p>
           <div className="actions">
-            <button onClick={exportManifest}>Export selected records</button>
+            <button onClick={exportManifest}>Export records</button>
             <FileField inputRef={manifestFile} accept=".json,application/json" label="Choose JSON" />
-            <button className="secondary" onClick={() => upload("/api/manifest/import", manifestFile.current?.files?.[0])}>Import records</button>
+            <button className="secondary" onClick={() => upload("/api/manifest/import", manifestFile.current?.files?.[0])}>Import</button>
           </div>
         </div>
         <div className="tool-card">
           <h3>Complete ZIP</h3>
-          <p>Transfers VPK files and metadata when sources are missing or the target cannot reach the internet.</p>
+          <p>Transfers VPK files and metadata when sources are missing or the target is offline.</p>
           <div className="actions">
-            <button className="secondary" onClick={exportZip}>Export selected ZIP</button>
+            <button className="secondary" onClick={exportZip}>Export ZIP</button>
             <FileField inputRef={zipFile} accept=".zip" label="Choose ZIP" />
             <button className="secondary" onClick={() => upload("/api/upload", zipFile.current?.files?.[0], "map")}>Import ZIP</button>
           </div>
         </div>
         <div className="tool-card">
           <h3>Manual VPK</h3>
-          <p>Imports one local VPK when a package has already been downloaded elsewhere.</p>
+          <p>Imports one local VPK that was downloaded elsewhere.</p>
           <div className="actions">
             <FileField inputRef={vpkFile} accept=".vpk" label="Choose VPK" />
             <select value={vpkKind} onChange={(event) => setVpkKind(event.target.value)}>
               <option value="map">Map package</option>
               <option value="mod">Mod</option>
             </select>
-            <button onClick={() => upload("/api/upload", vpkFile.current?.files?.[0], vpkKind)}>Import VPK</button>
+            <button className="secondary" onClick={() => upload("/api/upload", vpkFile.current?.files?.[0], vpkKind)}>Import VPK</button>
           </div>
         </div>
       </div>
@@ -1427,19 +1790,31 @@ function ModsPanel({ addons, selectedManifest, setSelectedManifest, runAction }:
   }
   return (
     <section className="panel">
-      <PanelHead title="Mod Management" subtitle="Enable or disable non-map VPK packages; remote records can be reinstalled." badge={`${mods.length} vpks`} />
+      <PanelHead title="Mod Management" subtitle="Enable or disable non-map VPK packages." badge={`${mods.length} vpks`} />
       <div className="compact-list">
         {!mods.length && <div className="empty-state">No manageable non-map VPK packages yet.</div>}
         {mods.map((addon) => (
           <div className="compact-row" key={addon.filename}>
-            <label><input type="checkbox" checked={selectedManifest.has(addon.filename)} onChange={(event) => toggle(addon, event.target.checked)} /> {addon.filename}</label>
+            <label>
+              <input type="checkbox" checked={selectedManifest.has(addon.filename)} onChange={(event) => toggle(addon, event.target.checked)} />
+              <span>
+                <strong>{addon.filename}</strong>
+                <span className="mono">{addon.title && addon.title !== addon.filename ? addon.title : "local package"}</span>
+              </span>
+            </label>
             <Pill label={addon.state} tone={statusClass(addon.state)} />
-            <span>{addon.state === "remote" ? "not downloaded" : fileSizeMb(addon.size)}</span>
+            <span>{packageSizeLabel(addon)}</span>
             <div className="actions right">
-              {addon.url && <a href={addon.url} target="_blank" rel="noreferrer">Open</a>}
-              {addon.state === "remote" && addon.reinstallable && <button onClick={() => runAction(() => installManifest(addon), "Queueing source install...")}>Install Source</button>}
-              {addon.state === "remote" && <button className="secondary" onClick={() => runAction(() => removeManifest(addon), "Removing source record...")}>Remove Record</button>}
-              {addon.state !== "remote" && <button onClick={() => runAction(() => addonState(addon), "Updating mod state...")}>{addon.state === "enabled" ? "Disable" : "Enable"}</button>}
+              {addon.state !== "remote" && (
+                <button className="secondary sm" onClick={() => runAction(() => addonState(addon), "Updating mod state...")}>
+                  {addon.state === "enabled" ? "Disable" : "Enable"}
+                </button>
+              )}
+              <RowMenu>
+                {addon.url && <a className="menu-item" href={addon.url} target="_blank" rel="noreferrer">Open page</a>}
+                {addon.state === "remote" && addon.reinstallable && <button className="menu-item" onClick={() => runAction(() => installManifest(addon), "Queueing source install...")}>Install source</button>}
+                {addon.state === "remote" && <button className="menu-item danger" onClick={() => runAction(() => removeManifest(addon), "Removing source record...")}>Remove record</button>}
+              </RowMenu>
             </div>
           </div>
         ))}
@@ -1468,28 +1843,32 @@ function PluginsPanel({ plugins, runAction }: { plugins: ServerPlugins; runActio
   }
   return (
     <section className="panel">
-      <PanelHead title="Server Plugins" subtitle="Manage MetaMod, SourceMod, and the conservative plugin stack." badge={`${installed}/${list.length} plugins`} />
+      <PanelHead title="Server Plugins" subtitle="MetaMod, SourceMod, and the conservative plugin stack." badge={`${installed}/${list.length} installed`} />
       <div className="health-row">
         <Pill label={`MetaMod ${plugins.metamod ? "installed" : "missing"}`} tone={plugins.metamod ? "ok" : "warn"} />
         <Pill label={`SourceMod ${plugins.sourcemod ? "installed" : "missing"}`} tone={plugins.sourcemod ? "ok" : "warn"} />
       </div>
       <div className="actions">
-        <button onClick={() => runAction(installStack, "Queueing plugin install...")}>Install Stack</button>
-        <button className="danger" onClick={() => runAction(() => restart("all"), "Restarting rooms...")}>Restart Both</button>
-        <button className="secondary" onClick={() => runAction(() => restart("room1"), "Restarting Room 1...")}>Restart Room 1</button>
-        <button className="secondary" onClick={() => runAction(() => restart("room2"), "Restarting Room 2...")}>Restart Room 2</button>
+        <button onClick={() => runAction(installStack, "Queueing plugin install...")}>Install stack</button>
+        <button className="danger" onClick={() => runAction(() => restart("all"), "Restarting rooms...")}>Restart both</button>
+        <button className="danger" onClick={() => runAction(() => restart("room1"), "Restarting Room 1...")}>Restart Room 1</button>
+        <button className="danger" onClick={() => runAction(() => restart("room2"), "Restarting Room 2...")}>Restart Room 2</button>
       </div>
       <div className="compact-list">
         {list.map((plugin) => (
           <div className="compact-row" key={plugin.id}>
             <div>
               <strong>{plugin.label}</strong>
-              <div className="muted mono">{plugin.filename || ""}</div>
+              <div className="mono">{plugin.filename || ""}</div>
             </div>
             <Pill label={plugin.state} tone={statusClass(plugin.state)} />
             <span>{plugin.size ? formatBytes(plugin.size) : ""}</span>
             <div className="actions right">
-              {plugin.state !== "missing" && <button onClick={() => runAction(() => setPlugin(plugin), "Updating server plugin...")}>{plugin.state === "enabled" ? "Disable" : "Enable"}</button>}
+              {plugin.state !== "missing" && (
+                <button className="secondary sm" onClick={() => runAction(() => setPlugin(plugin), "Updating server plugin...")}>
+                  {plugin.state === "enabled" ? "Disable" : "Enable"}
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -1513,9 +1892,9 @@ function CampaignPanel({ campaigns, mapCount }: { campaigns: Campaign[]; mapCoun
     : campaigns;
   return (
     <section className="panel">
-      <PanelHead title="Installed Maps" subtitle="Campaigns are grouped by detected mission metadata; Other contains unrecognized maps." badge={`${mapCount} maps`} />
+      <PanelHead title="Installed Maps" subtitle="Grouped by detected mission metadata." badge={`${mapCount} maps`} />
       <div className="filter-row">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter campaign or map name" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter campaigns or maps" />
       </div>
       <div className="campaign-list">
         {!filtered.length && <div className="empty-state">No maps match this filter.</div>}

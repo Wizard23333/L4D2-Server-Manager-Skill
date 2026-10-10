@@ -3828,59 +3828,210 @@ def session_cookie_header(token, max_age=SESSION_TTL_SECONDS):
 
 def render_login_page(message=""):
     safe_message = html.escape(message or "")
-    message_html = f'<div id="message" class="message">{safe_message}</div>' if safe_message else '<div id="message" class="message"></div>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>L4D2 Manager Login</title>
+  <meta name="color-scheme" content="dark light">
+  <title>Sign in · L4D2 Server Manager</title>
+  <script>
+    (function () {{
+      var theme = "dark";
+      try {{
+        var saved = localStorage.getItem("l4d2-theme");
+        if (saved === "light" || saved === "dark") {{ theme = saved; }}
+      }} catch (error) {{ /* storage unavailable */ }}
+      document.documentElement.dataset.theme = theme;
+    }})();
+  </script>
   <style>
-    :root {{ color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7f7f4; color: #202322; }}
-    main {{ width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9ded8; border-radius: 8px; padding: 24px; }}
-    h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: 0; }}
-    p {{ margin: 0 0 20px; color: #68706a; }}
-    label {{ display: grid; gap: 6px; margin-top: 14px; font-weight: 650; }}
-    input {{ height: 38px; border: 1px solid #b8c1ba; border-radius: 7px; padding: 0 10px; font: inherit; }}
-    button {{ margin-top: 18px; width: 100%; height: 40px; border: 1px solid #25362d; border-radius: 7px; background: #25362d; color: #fff; font: inherit; cursor: pointer; }}
-    button:disabled {{ opacity: .6; cursor: wait; }}
-    .message {{ min-height: 20px; margin-top: 14px; color: #9c3b37; }}
+    :root,
+    [data-theme="dark"] {{
+      color-scheme: dark;
+      --bg: #0c0f12;
+      --surface: #151b21;
+      --surface-2: #1a2128;
+      --line: #232d36;
+      --line-2: #32414c;
+      --text: #e8edf0;
+      --text-2: #a3afb8;
+      --text-3: #6d7b85;
+      --accent: #cf3f38;
+      --accent-2: #e0574f;
+      --danger-ink: #f0908b;
+      --shadow: 0 22px 48px -18px rgba(0, 0, 0, .72);
+      --glow: radial-gradient(760px 380px at 50% -12%, rgba(207, 63, 56, .16), transparent 62%);
+    }}
+    [data-theme="light"] {{
+      color-scheme: light;
+      --bg: #f2f4f7;
+      --surface: #ffffff;
+      --surface-2: #f6f8fa;
+      --line: #e2e6eb;
+      --line-2: #ccd4dc;
+      --text: #14181c;
+      --text-2: #4a545c;
+      --text-3: #77828b;
+      --accent: #b52e27;
+      --accent-2: #9e2822;
+      --danger-ink: #8d2a22;
+      --shadow: 0 22px 48px -22px rgba(16, 24, 32, .3);
+      --glow: none;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: var(--glow), var(--bg);
+      background-attachment: fixed;
+      color: var(--text);
+      font-family: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }}
+    main {{
+      position: relative;
+      width: min(380px, 100%);
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }}
+    .theme-toggle {{
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+    }}
+    .theme-toggle:hover {{ background: var(--surface-2); color: var(--text); }}
+    .theme-toggle svg {{ width: 15px; height: 15px; }}
+    .brand {{ display: flex; align-items: center; gap: 11px; margin-bottom: 22px; }}
+    .logo {{
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: linear-gradient(150deg, var(--accent), #7d211d);
+      color: #fff;
+      font-size: 12.5px;
+      font-weight: 800;
+      letter-spacing: .02em;
+    }}
+    .name {{ font-size: 15px; font-weight: 700; line-height: 1.2; }}
+    .sub {{ display: block; margin-top: 2px; color: var(--text-3); font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }}
+    h1 {{ margin: 0 0 4px; font-size: 18px; font-weight: 700; letter-spacing: -.01em; }}
+    .lede {{ margin: 0 0 18px; color: var(--text-3); font-size: 12.5px; }}
+    label {{ display: grid; gap: 6px; margin-top: 14px; color: var(--text-2); font-size: 12.5px; font-weight: 600; }}
+    input {{
+      height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      background: var(--surface-2);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      transition: border-color .14s ease;
+    }}
+    input::placeholder {{ color: var(--text-3); }}
+    input:focus {{ outline: none; border-color: var(--accent); }}
+    button[type="submit"] {{
+      width: 100%;
+      height: 38px;
+      margin-top: 20px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-size: 13.5px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: background .14s ease, border-color .14s ease;
+    }}
+    button[type="submit"]:hover {{ background: var(--accent-2); border-color: var(--accent-2); }}
+    button[type="submit"]:disabled {{ opacity: .5; cursor: wait; }}
+    .message {{ min-height: 18px; margin-top: 14px; color: var(--danger-ink); font-size: 12.5px; }}
+    @media (prefers-reduced-motion: reduce) {{
+      * {{ transition-duration: .001ms !important; }}
+    }}
   </style>
 </head>
 <body>
   <main>
-    <h1>L4D2 Server Manager</h1>
-    <p>Sign in to manage rooms, maps, mods, and server health.</p>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle theme"></button>
+    <div class="brand">
+      <div class="logo">L4D2</div>
+      <div>
+        <div class="name">Server Manager</div>
+        <span class="sub">Dedicated</span>
+      </div>
+    </div>
+    <h1>Sign in</h1>
+    <p class="lede">Manage rooms, maps, mods, and server health.</p>
     <form id="login-form">
       <label>Username <input id="username" name="username" autocomplete="username" required autofocus></label>
       <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required></label>
-      <button id="submit" type="submit">Sign In</button>
+      <button id="submit" type="submit">Sign in</button>
     </form>
-    {message_html}
+    <div id="message" class="message">{safe_message}</div>
   </main>
   <script>
-    const params = new URLSearchParams(location.search);
-    const messageEl = document.querySelector("#message");
+    var ICONS = {{
+      sun: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M12.8 3.2l-1.1 1.1M4.3 11.7l-1.1 1.1"/></svg>',
+      moon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 9.8A5.6 5.6 0 016.2 2.8a5.6 5.6 0 107 7z"/></svg>'
+    }};
+    var toggle = document.querySelector("#theme-toggle");
+    var messageEl = document.querySelector("#message");
+    var params = new URLSearchParams(location.search);
     if (params.get("expired") === "1") {{
       messageEl.textContent = "Your session expired. Sign in again.";
     }}
-    document.querySelector("#login-form").addEventListener("submit", async event => {{
+    function paintTheme() {{
+      var isLight = document.documentElement.dataset.theme === "light";
+      toggle.innerHTML = isLight ? ICONS.moon : ICONS.sun;
+      toggle.title = isLight ? "Switch to dark theme" : "Switch to light theme";
+    }}
+    toggle.addEventListener("click", function () {{
+      var next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      try {{ localStorage.setItem("l4d2-theme", next); }} catch (error) {{ /* ignore */ }}
+      paintTheme();
+    }});
+    paintTheme();
+    document.querySelector("#login-form").addEventListener("submit", async function (event) {{
       event.preventDefault();
-      const button = document.querySelector("#submit");
+      var button = document.querySelector("#submit");
       button.disabled = true;
       messageEl.textContent = "Signing in...";
-      const body = new URLSearchParams({{
+      var body = new URLSearchParams({{
         username: document.querySelector("#username").value,
         password: document.querySelector("#password").value
       }});
       try {{
-        const res = await fetch("/api/login", {{
+        var res = await fetch("/api/login", {{
           method: "POST",
-          headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
-          body
+          headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+          body: body
         }});
-        const data = await res.json();
+        var data = await res.json();
         if (!res.ok) {{
           messageEl.textContent = data.message || "Sign in failed";
           return;
